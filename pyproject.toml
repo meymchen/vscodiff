@@ -1,0 +1,19 @@
+[project]
+name = "vscodiff"
+version = "0.1.0"
+description = "Python implementation of vscode-diff"
+readme = "README.md"
+authors = [
+    { name = "meymchen", email = "meymchen@outlook.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
