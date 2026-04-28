@@ -1,6 +1,6 @@
 # vscodiff
 
-Python implementation of VS Code's diff algorithm, ported from TypeScript [codiff](https://github.com/zhanba/codiff).
+Python implementation of VS Code's diff algorithm, referenced from the VS Code source code.
 
 ## Features
 
@@ -13,6 +13,14 @@ Python implementation of VS Code's diff algorithm, ported from TypeScript [codif
 
 ## Installation
 
+**Recommended — with uv:**
+
+```bash
+uv add vscodiff
+```
+
+**Alternative — with pip:**
+
 ```bash
 pip install vscodiff
 ```
@@ -22,12 +30,12 @@ Requires Python ≥ 3.12.
 ## Quick Start
 
 ```python
-from vscodiff import Codiff, DiffOptions
+from vscodiff import VSCDiff, DiffOptions
 
-codiff = Codiff()
+diff = VSCDiff()
 
 # Compute diff between two strings
-result = codiff.compute_diff("hello\nworld", "hello\nthere\nworld")
+result = diff.compute_diff("hello\nworld", "hello\nthere\nworld")
 
 for change in result.changes:
     print(f"  original lines {change.original}: {change.inner_changes}")
@@ -35,14 +43,14 @@ for change in result.changes:
 
 ## API
 
-### `Codiff`
+### `VSCDiff`
 
-Main diff entry point. Configure with `CodiffOptions`:
+Main diff entry point. Configure with `VSCDiffOptions`:
 
 ```python
-from vscodiff import Codiff, CodiffOptions, DiffOptions
+from vscodiff import VSCDiff, VSCDiffOptions, DiffOptions
 
-options = CodiffOptions(
+options = VSCDiffOptions(
     diff_options=DiffOptions(
         ignore_trim_whitespace=True,
         max_computation_time_ms=1000,
@@ -51,15 +59,15 @@ options = CodiffOptions(
     ),
     cache_size=100,
 )
-codiff = Codiff(options)
-result = codiff.compute_diff(original_text, modified_text)
+diff = VSCDiff(options)
+result = diff.compute_diff(original_text, modified_text)
 ```
 
 ### Key Types
 
 | Type | Description |
 |------|-------------|
-| `Codiff` | Main diff engine |
+| `VSCDiff` | Main diff engine |
 | `DocumentDiff` | Result: identical, quit_early, changes, moves |
 | `DetailedLineRangeMapping` | A changed line range with inner char-level diffs |
 | `RangeMapping` | Character-level diff range |

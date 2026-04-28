@@ -1,7 +1,7 @@
 [project]
 name = "vscodiff"
 version = "0.1.0"
-description = "Python implementation of VS Code's diff algorithm (ported from zhanba/codiff)"
+description = "Python implementation of VS Code's diff algorithm"
 readme = "README.md"
 authors = [
     { name = "meymchen", email = "meymchen@outlook.com" }
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Text Processing",
     "Typing :: Typed",
 ]
-keywords = ["diff", "vscode", "myers", "lcs", "text-diff", "line-diff", "codiff"]
+keywords = ["diff", "vscode", "myers", "lcs", "text-diff", "line-diff"]
 
 [project.urls]
 Homepage = "https://github.com/meymchen/vscodiff"
