@@ -124,11 +124,7 @@ def _do_assert_diff(
     )
 
     for i, (a, e) in enumerate(zip(actual, expected_changes)):
-        assert a == e, (
-            f"Change [{i}] mismatch:\n"
-            f"  actual:   {a}\n"
-            f"  expected: {e}"
-        )
+        assert a == e, f"Change [{i}] mismatch:\n  actual:   {a}\n  expected: {e}"
 
 
 # ===========================================================================
@@ -254,8 +250,12 @@ class TestVSCodeDiffComputer:
         """Two deletions in the middle, separated by an unchanged line."""
         _do_assert_diff(
             [
-                "line1", "line2", "new line", "line3",
-                "another new line", "line4",
+                "line1",
+                "line2",
+                "new line",
+                "line3",
+                "another new line",
+                "line4",
             ],
             ["line1", "line2", "line3", "line4"],
             [
@@ -273,7 +273,10 @@ class TestVSCodeDiffComputer:
             ["line changed"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [_create_char_change(1, 5, 1, 5, 1, 5, 1, 13)],
                 )
             ],
@@ -286,7 +289,10 @@ class TestVSCodeDiffComputer:
             ["my line"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [_create_char_change(1, 1, 1, 1, 1, 1, 1, 4)],
                 )
             ],
@@ -299,7 +305,10 @@ class TestVSCodeDiffComputer:
             ["abzzba"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [_create_char_change(1, 3, 1, 3, 1, 3, 1, 5)],
                 )
             ],
@@ -312,7 +321,10 @@ class TestVSCodeDiffComputer:
             ["abzzbzza"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [
                         _create_char_change(1, 3, 1, 3, 1, 3, 1, 5),
                         _create_char_change(1, 4, 1, 4, 1, 6, 1, 8),
@@ -328,7 +340,10 @@ class TestVSCodeDiffComputer:
             ["abcfg"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [_create_char_change(1, 4, 1, 6, 1, 4, 1, 4)],
                 )
             ],
@@ -341,7 +356,10 @@ class TestVSCodeDiffComputer:
             ["acfg"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [
                         _create_char_change(1, 2, 1, 3, 1, 2, 1, 2),
                         _create_char_change(1, 4, 1, 6, 1, 3, 1, 3),
@@ -359,7 +377,10 @@ class TestVSCodeDiffComputer:
             ["abcz"],
             [
                 _create_line_change(
-                    1, 2, 1, 1,
+                    1,
+                    2,
+                    1,
+                    1,
                     [_create_char_change(1, 4, 2, 5, 1, 4, 1, 5)],
                 )
             ],
@@ -372,7 +393,10 @@ class TestVSCodeDiffComputer:
             ["foo", "abcz", "BAR"],
             [
                 _create_line_change(
-                    2, 3, 2, 2,
+                    2,
+                    3,
+                    2,
+                    2,
                     [_create_char_change(2, 4, 3, 5, 2, 4, 2, 5)],
                 )
             ],
@@ -385,7 +409,10 @@ class TestVSCodeDiffComputer:
             ["foo", "abcz", "zzzzefgh", "BAR"],
             [
                 _create_line_change(
-                    2, 3, 2, 3,
+                    2,
+                    3,
+                    2,
+                    3,
                     [
                         _create_char_change(2, 4, 2, 5, 2, 4, 2, 5),
                         _create_char_change(3, 1, 3, 1, 3, 1, 3, 5),
@@ -401,7 +428,10 @@ class TestVSCodeDiffComputer:
             ["", "", "axc", ""],
             [
                 _create_line_change(
-                    1, 1, 1, 4,
+                    1,
+                    1,
+                    1,
+                    4,
                     [
                         _create_char_change(1, 1, 1, 1, 1, 1, 3, 1),
                         _create_char_change(1, 2, 1, 3, 3, 2, 3, 3),
@@ -426,7 +456,10 @@ class TestVSCodeDiffComputer:
             ["foo", "zzzefgh", "xxx", "BAR"],
             [
                 _create_line_change(
-                    2, 3, 2, 3,
+                    2,
+                    3,
+                    2,
+                    3,
                     [
                         _create_char_change(2, 1, 3, 1, 2, 1, 2, 4),
                         _create_char_change(3, 5, 3, 5, 2, 8, 3, 4),
@@ -443,7 +476,10 @@ class TestVSCodeDiffComputer:
             [
                 _create_line_insertion(1, 1, 0),
                 _create_line_change(
-                    2, 3, 3, 4,
+                    2,
+                    3,
+                    3,
+                    4,
                     [
                         _create_char_change(2, 1, 3, 1, 3, 1, 3, 4),
                         _create_char_change(3, 5, 3, 5, 3, 8, 4, 4),
@@ -460,7 +496,10 @@ class TestVSCodeDiffComputer:
             [
                 _create_line_insertion(1, 1, 0),
                 _create_line_change(
-                    2, 3, 3, 4,
+                    2,
+                    3,
+                    3,
+                    4,
                     [
                         _create_char_change(2, 1, 3, 1, 3, 1, 3, 4),
                         _create_char_change(3, 5, 3, 5, 3, 8, 4, 4),
@@ -479,7 +518,10 @@ class TestVSCodeDiffComputer:
             ["azzzbzzzbzzza"],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [_create_char_change(1, 2, 1, 4, 1, 2, 1, 13)],
                 )
             ],
@@ -497,7 +539,10 @@ class TestVSCodeDiffComputer:
             [
                 _create_line_insertion(1, 1, 0),
                 _create_line_change(
-                    2, 3, 3, 4,
+                    2,
+                    3,
+                    3,
+                    4,
                     [
                         _create_char_change(2, 1, 2, 5, 3, 1, 3, 4),
                         _create_char_change(3, 5, 3, 5, 4, 1, 4, 4),
@@ -754,11 +799,11 @@ class TestVSCodeDiffComputer:
         ]
         expected = [
             _create_line_change(
-                1, 27, 1, 27,
-                [
-                    _create_char_change(i, 1, i, 1, i, 1, i, 2)
-                    for i in range(1, 28)
-                ],
+                1,
+                27,
+                1,
+                27,
+                [_create_char_change(i, 1, i, 1, i, 1, i, 2) for i in range(1, 28)],
             )
         ]
         _do_assert_diff(
@@ -780,7 +825,10 @@ class TestVSCodeDiffComputer:
             ],
             [
                 _create_line_change(
-                    1, 1, 1, 1,
+                    1,
+                    1,
+                    1,
+                    1,
                     [
                         _create_char_change(1, 9, 1, 19, 1, 9, 1, 9),
                         _create_char_change(1, 58, 1, 120, 1, 48, 1, 48),
@@ -798,7 +846,10 @@ class TestVSCodeDiffComputer:
             ["    1", "   3"],
             [
                 _create_line_change(
-                    2, 2, 2, 2,
+                    2,
+                    2,
+                    2,
+                    2,
                     [_create_char_change(2, 3, 2, 4, 2, 3, 2, 5)],
                 )
             ],
@@ -986,7 +1037,10 @@ class TestVSCodeDiffComputer:
             ["if True:", "\tprint(2) "],
             [
                 _create_line_change(
-                    2, 2, 2, 2,
+                    2,
+                    2,
+                    2,
+                    2,
                     [
                         _create_char_change(2, 1, 2, 5, 2, 1, 2, 2),
                         _create_char_change(2, 13, 2, 13, 2, 10, 2, 11),
