@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Callable, Iterable
 
 
@@ -20,9 +21,30 @@ def equals[T](
     return True
 
 
-def for_each_adjacent[T](lst: list[T], f: Callable[[T | None, T | None], None]):
-    for i in range(len(lst)):
+def for_each_adjacent[T](lst: Sequence[T], f: Callable[[T | None, T | None], None]):
+    for i in range(len(lst) + 1):
         f(None if i == 0 else lst[i - 1], None if i == len(lst) else lst[i])
+
+
+def push_many[T](arr: list[T], items: list[T]) -> None:
+    arr.extend(items)
+
+
+def compare_by[TItem, TCompareBy](
+    selector: Callable[[TItem], TCompareBy],
+    comparator: Callable[[TCompareBy, TCompareBy], int],
+) -> Callable[[TItem, TItem], int]:
+    return lambda a, b: comparator(selector(a), selector(b))
+
+
+def number_comparator(a: int, b: int) -> int:
+    return a - b
+
+
+def reverse_order[T](
+    comparator: Callable[[T, T], int],
+) -> Callable[[T, T], int]:
+    return lambda a, b: -comparator(a, b)
 
 
 def for_each_with_neighbors[T](

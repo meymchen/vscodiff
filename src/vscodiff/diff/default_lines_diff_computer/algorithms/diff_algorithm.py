@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from vscodiff.common.errors import BugIndicatingError
 from vscodiff.common.lists import for_each_adjacent
 from vscodiff.common.offset_range import OffsetRange
 from vscodiff.common.uint import Constants
@@ -38,6 +40,37 @@ class Timeout(ABC):
     @abstractmethod
     def is_valid(self) -> bool:
         raise NotImplementedError
+
+
+class InfiniteTimeout(Timeout):
+    instance: InfiniteTimeout
+
+    def is_valid(self) -> bool:
+        return True
+
+
+InfiniteTimeout.instance = InfiniteTimeout()
+
+
+class DateTimeout(Timeout):
+    def __init__(self, timeout: int):
+        if timeout <= 0:
+            raise BugIndicatingError("timeout must be positive")
+
+        self._timeout = timeout
+        self._start_time = time.monotonic() * 1000
+        self._valid = True
+
+    def is_valid(self) -> bool:
+        valid = (time.monotonic() * 1000) - self._start_time < self._timeout
+        if not valid and self._valid:
+            self._valid = False
+
+        return self._valid
+
+    def disable(self):
+        self._timeout = Constants.MAX_SAFE_SMALL_INT
+        self._valid = True
 
 
 @dataclass

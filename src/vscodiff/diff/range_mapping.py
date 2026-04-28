@@ -151,8 +151,10 @@ def line_range_mapping_from_range_mappings(
             lambda a: _get_line_range_mapping(a, original_lines, modified_lines),
             alignments,
         ),
-        lambda a1, a2: a1.original.overlap_or_touch(a2.original)
-        or a1.modified.overlap_or_touch(a2.modified),
+        lambda a1, a2: (
+            a1.original.overlap_or_touch(a2.original)
+            or a1.modified.overlap_or_touch(a2.modified)
+        ),
     ):
         first = g[0]
         last = g[-1]
@@ -160,7 +162,7 @@ def line_range_mapping_from_range_mappings(
             DetailedLineRangeMapping(
                 first.original.join(last.original),
                 first.modified.join(last.modified),
-                list(map(lambda a: a.inner_changes[0], g)),  # type: ignore
+                list(map(lambda a: a.inner_changes[0], g)),
             )
         )
 
@@ -179,13 +181,15 @@ def line_range_mapping_from_range_mappings(
 
         return check_adjacent_items(
             changes,
-            lambda m1, m2: m2.original.start_line - m1.original.end_line_exclusive
-            == m2.modified.start_line - m1.modified.end_line_exclusive
-            and m1.original.end_line_exclusive < m2.original.start_line
-            and m1.modified.end_line_exclusive < m2.modified.start_line,
+            lambda m1, m2: (
+                m2.original.start_line - m1.original.end_line_exclusive
+                == m2.modified.start_line - m1.modified.end_line_exclusive
+                and m1.original.end_line_exclusive < m2.original.start_line
+                and m1.modified.end_line_exclusive < m2.modified.start_line
+            ),
         )
 
-    assert assert_fn()
+    assert_fn()
     return changes
 
 
