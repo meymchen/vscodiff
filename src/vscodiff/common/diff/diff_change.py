@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 
@@ -13,3 +15,9 @@ class DiffChange:
 
     def get_modified_end(self):
         return self.modified_start + self.modified_length
+
+
+@dataclass
+class DiffResult:
+    quit_early: bool
+    changes: list[DiffChange]

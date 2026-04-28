@@ -1,13 +1,31 @@
 [project]
 name = "vscodiff"
 version = "0.1.0"
-description = "Python implementation of vscode-diff"
+description = "Python implementation of VS Code's diff algorithm (ported from zhanba/codiff)"
 readme = "README.md"
 authors = [
     { name = "meymchen", email = "meymchen@outlook.com" }
 ]
 requires-python = ">=3.12"
 dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Text Processing",
+    "Typing :: Typed",
+]
+keywords = ["diff", "vscode", "myers", "lcs", "text-diff", "line-diff", "codiff"]
+
+[project.urls]
+Homepage = "https://github.com/meymchen/vscodiff"
+Repository = "https://github.com/meymchen/vscodiff"
+Issues = "https://github.com/meymchen/vscodiff/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -16,4 +34,6 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=8.3.4",
+    "ruff>=0.15.12",
+    "ty>=0.0.32",
 ]
