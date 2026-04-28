@@ -101,6 +101,7 @@ class TestCharSequence:
     def test_index_bounds(self) -> None:
         cs = CharSequence([ord("a")], [1], [1])
         import pytest
+
         # Index equal to length is valid (returns end line of last element)
         # Index strictly greater than length raises IndexError
         with pytest.raises(IndexError):
@@ -120,7 +121,9 @@ class TestCharChange:
             [1, 1, 1],
             [1, 2, 3],
         )
-        dc = DiffChange(original_start=0, original_length=1, modified_start=0, modified_length=1)
+        dc = DiffChange(
+            original_start=0, original_length=1, modified_start=0, modified_length=1
+        )
         cc = CharChange.create_from_diff_change(dc, seq, seq)
         assert cc.original_start_line_number == 1
         assert cc.original_start_column == 1
@@ -145,7 +148,9 @@ class TestCharChange:
             [1, 1, 2],
             [1, 2, 1],
         )
-        dc = DiffChange(original_start=2, original_length=1, modified_start=2, modified_length=1)
+        dc = DiffChange(
+            original_start=2, original_length=1, modified_start=2, modified_length=1
+        )
         cc = CharChange.create_from_diff_change(dc, seq_orig, seq_mod)
         assert cc.original_start_line_number == 2
         assert cc.original_start_column == 1
@@ -205,22 +210,34 @@ class TestPostProcessCharChanges:
 class TestDiffComputerSpecials:
     def test_both_empty_single_line(self) -> None:
         """Both original and modified are [''] (single empty line)."""
-        dc = DiffComputer([""], [""], DiffComputerOpts(
-            should_compute_char_changes=True,
-            should_post_process_char_changes=False,
-            should_ignore_trim_whitespace=False,
-            should_make_pretty_diff=True,
-            max_computation_time=0,
-        ))
+        dc = DiffComputer(
+            [""],
+            [""],
+            DiffComputerOpts(
+                should_compute_char_changes=True,
+                should_post_process_char_changes=False,
+                should_ignore_trim_whitespace=False,
+                should_make_pretty_diff=True,
+                max_computation_time=0,
+            ),
+        )
         result = dc.compute_diff()
         assert result.changes == []
         assert result.quit_early is False
 
     def test_empty_original_to_content(self) -> None:
         """Original is empty string, modified has content."""
-        dc = DiffComputer([""], ["hello"], DiffComputerOpts(
-            True, False, False, True, 0,
-        ))
+        dc = DiffComputer(
+            [""],
+            ["hello"],
+            DiffComputerOpts(
+                True,
+                False,
+                False,
+                True,
+                0,
+            ),
+        )
         result = dc.compute_diff()
         assert len(result.changes) == 1
         c = result.changes[0]
@@ -231,9 +248,17 @@ class TestDiffComputerSpecials:
 
     def test_content_to_empty_modified(self) -> None:
         """Original has content, modified is empty string."""
-        dc = DiffComputer(["hello"], [""], DiffComputerOpts(
-            True, False, False, True, 0,
-        ))
+        dc = DiffComputer(
+            ["hello"],
+            [""],
+            DiffComputerOpts(
+                True,
+                False,
+                False,
+                True,
+                0,
+            ),
+        )
         result = dc.compute_diff()
         assert len(result.changes) == 1
         c = result.changes[0]
@@ -243,9 +268,17 @@ class TestDiffComputerSpecials:
         assert c.modified_end_line_number == 1
 
     def test_identical_multiline(self) -> None:
-        dc = DiffComputer(["a", "b", "c"], ["a", "b", "c"], DiffComputerOpts(
-            True, False, False, True, 0,
-        ))
+        dc = DiffComputer(
+            ["a", "b", "c"],
+            ["a", "b", "c"],
+            DiffComputerOpts(
+                True,
+                False,
+                False,
+                True,
+                0,
+            ),
+        )
         result = dc.compute_diff()
         assert result.changes == []
         assert result.quit_early is False
@@ -319,7 +352,8 @@ class TestLegacyLinesDiffComputer:
 
         computer = LegacyLinesDiffComputer()
         result = computer.compute_diff(
-            ["a"], ["b"],
+            ["a"],
+            ["b"],
             LinesDiffComputerOptions(False, 0, False, False),
         )
         assert isinstance(result, LinesDiff)
