@@ -1,4 +1,4 @@
-"""Unit tests for the vscodiff Python port.
+"""Unit tests for the vscodiff Python implementation.
 
 Run with: pytest tests/ -v
 """
@@ -311,32 +311,32 @@ class TestLcsDiffMultiline:
 
 
 # ---------------------------------------------------------------------------
-# Codiff (main entry point)
+# VSCDiff (main entry point)
 # ---------------------------------------------------------------------------
 
 
-class TestCodiff:
+class TestVSCDiff:
     @pytest.fixture(autouse=True)
     def _setup(self):
-        from vscodiff.codiff import Codiff
+        from vscodiff.engine import VSCDiff
 
-        self.Codiff = Codiff
+        self.VSCDiff = VSCDiff
 
     def test_create_instance(self):
-        codiff = self.Codiff()
-        assert codiff is not None
+        vsdiff = self.VSCDiff()
+        assert vsdiff is not None
 
     def test_identical_strings(self):
-        codiff = self.Codiff()
-        result = codiff.compute_diff("same", "same")
+        vsdiff = self.VSCDiff()
+        result = vsdiff.compute_diff("same", "same")
         assert result.identical is True
         assert result.quit_early is False
         assert len(result.changes) == 0
         assert len(result.moves) == 0
 
     def test_simple_diff(self):
-        codiff = self.Codiff()
-        result = codiff.compute_diff(
+        vsdiff = self.VSCDiff()
+        result = vsdiff.compute_diff(
             "one\ntwo\nthree\nfour\nfive",
             "one\nTwo\nThree\nfour\nfive\nSix",
         )
@@ -344,55 +344,55 @@ class TestCodiff:
         assert len(result.changes) > 0
 
     def test_empty_original(self):
-        codiff = self.Codiff()
-        result = codiff.compute_diff("", "hello\nworld")
+        vsdiff = self.VSCDiff()
+        result = vsdiff.compute_diff("", "hello\nworld")
         assert not result.identical
         assert len(result.changes) == 1
 
     def test_empty_modified(self):
-        codiff = self.Codiff()
-        result = codiff.compute_diff("hello\nworld", "")
+        vsdiff = self.VSCDiff()
+        result = vsdiff.compute_diff("hello\nworld", "")
         assert not result.identical
         assert len(result.changes) == 1
 
     def test_both_empty(self):
-        codiff = self.Codiff()
-        result = codiff.compute_diff("", "")
+        vsdiff = self.VSCDiff()
+        result = vsdiff.compute_diff("", "")
         assert result.identical is True
         assert result.changes == []
 
     def test_cache_hit(self):
-        codiff = self.Codiff()
-        r1 = codiff.compute_diff("abc", "abd")
-        r2 = codiff.compute_diff("abc", "abd")  # cache hit
+        vsdiff = self.VSCDiff()
+        r1 = vsdiff.compute_diff("abc", "abd")
+        r2 = vsdiff.compute_diff("abc", "abd")  # cache hit
         assert len(r1.changes) == len(r2.changes)
 
     def test_with_legacy_algorithm(self):
-        from vscodiff.codiff import DiffOptions
+        from vscodiff.engine import DiffOptions
 
-        codiff = self.Codiff()
+        vsdiff = self.VSCDiff()
         legacy_opts = DiffOptions(
             ignore_trim_whitespace=True,
             max_computation_time_ms=1000,
             compute_moves=False,
             diff_algorithm="legacy",
         )
-        result = codiff.compute_diff("abc", "abd", legacy_opts)
+        result = vsdiff.compute_diff("abc", "abd", legacy_opts)
         assert result is not None
         assert len(result.changes) > 0
 
-    def test_codiff_options_constructor(self):
-        from vscodiff.codiff import CodiffOptions, DiffOptions
+    def test_vscdiff_options_constructor(self):
+        from vscodiff.engine import VSCDiffOptions, DiffOptions
 
-        opts = CodiffOptions(
+        opts = VSCDiffOptions(
             diff_options=DiffOptions(
                 diff_algorithm="advanced",
                 ignore_trim_whitespace=False,
             ),
             cache_size=50,
         )
-        codiff = self.Codiff(opts)
-        result = codiff.compute_diff("abc", "abd")
+        vsdiff = self.VSCDiff(opts)
+        result = vsdiff.compute_diff("abc", "abd")
         assert result is not None
 
     def test_complex_diff_from_ts_suite(self):
@@ -466,8 +466,8 @@ class TestCodiff:
             "    var349 = { key: { key: 'hnx7g' } };\n"
             "    let var808 = [40, 'nrp50i', [29, 61, '2it09r']];"
         )
-        codiff = self.Codiff()
-        result = codiff.compute_diff(original, modified)
+        vsdiff = self.VSCDiff()
+        result = vsdiff.compute_diff(original, modified)
         assert result is not None
         assert not result.identical
         assert len(result.changes) > 0

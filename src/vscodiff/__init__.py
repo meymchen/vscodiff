@@ -1,6 +1,6 @@
 """vscodiff — Python implementation of VS Code's diff algorithm."""
 
-from vscodiff.codiff import Codiff, CodiffOptions, DiffOptions
+from vscodiff.engine import VSCDiff, VSCDiffOptions, DiffOptions
 from vscodiff.common.diff.diff_change import DiffChange, DiffResult
 from vscodiff.common.diff.diff import LcsDiff, Sequence, StringDiffSequence, string_diff
 from vscodiff.common.line_range import LineRange
@@ -28,8 +28,8 @@ from vscodiff.diff.range_mapping import (
 
 __all__ = [
     # Main entry
-    "Codiff",
-    "CodiffOptions",
+    "VSCDiff",
+    "VSCDiffOptions",
     "DiffOptions",
     # Diff result types
     "DiffChange",

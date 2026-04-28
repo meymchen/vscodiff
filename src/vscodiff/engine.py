@@ -24,7 +24,7 @@ class DiffOptions(DocumentDiffProviderOptions):
 
 
 @dataclass
-class CodiffOptions:
+class VSCDiffOptions:
     diff_options: DiffOptions = field(
         default_factory=lambda: DiffOptions(
             ignore_trim_whitespace=True,
@@ -37,7 +37,7 @@ class CodiffOptions:
     cache_size: int = 100
 
 
-class Codiff:
+class VSCDiff:
     DEFAULT_CACHE_SIZE = 100
     DEFAULT_DIFF_OPTIONS = DiffOptions(
         ignore_trim_whitespace=True,
@@ -47,9 +47,9 @@ class Codiff:
         diff_algorithm="advanced",
     )
 
-    def __init__(self, options: CodiffOptions | None = None):
+    def __init__(self, options: VSCDiffOptions | None = None):
         if options is None:
-            self._options = CodiffOptions(
+            self._options = VSCDiffOptions(
                 diff_options=replace(self.DEFAULT_DIFF_OPTIONS),
                 cache_size=self.DEFAULT_CACHE_SIZE,
             )
@@ -75,7 +75,7 @@ class Codiff:
     def _get_diff_cache_key(self, original: str, modified: str) -> str:
         return (
             f"{self.get_content_key(original)}"
-            f"-codiff-cache-key-"
+            f"-vscdiff-cache-key-"
             f"{self.get_content_key(modified)}"
         )
 
