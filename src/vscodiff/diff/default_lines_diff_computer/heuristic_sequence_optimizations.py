@@ -262,7 +262,7 @@ def extend_diffs_to_entire_word_if_appropriate(
 
         w1 = find_parent(sequence1, pair.offset1)
         w2 = find_parent(sequence2, pair.offset2)
-        if not w1 or not w2:
+        if w1 is None or w2 is None:
             return
 
         w = SequenceDiff(w1, w2)

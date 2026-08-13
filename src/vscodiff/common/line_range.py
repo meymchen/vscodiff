@@ -68,7 +68,7 @@ class LineRange:
         )
 
     def intersect(self, other: LineRange):
-        start_line = max(self.start_line, other.end_line_exclusive)
+        start_line = max(self.start_line, other.start_line)
         end_line_exclusive = min(self.end_line_exclusive, other.end_line_exclusive)
         if start_line <= end_line_exclusive:
             return LineRange(start_line, end_line_exclusive)

@@ -195,7 +195,7 @@ class SequenceDiff:
     def intersect(self, other: SequenceDiff):
         i1 = self.seq1_range.intersect(other.seq1_range)
         i2 = self.seq2_range.intersect(other.seq2_range)
-        if not i1 or not i2:
+        if i1 is None or i2 is None:
             return
 
         return SequenceDiff(i1, i2)

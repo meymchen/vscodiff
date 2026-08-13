@@ -30,9 +30,9 @@ Requires Python ≥ 3.12.
 ## Quick Start
 
 ```python
-from vscodiff import VSCDiff, DiffOptions
+from vscodiff import VSCodeDiff, DiffOptions
 
-diff = VSCDiff()
+diff = VSCodeDiff()
 
 # Compute diff between two strings
 result = diff.compute_diff("hello\nworld", "hello\nthere\nworld")
@@ -43,14 +43,14 @@ for change in result.changes:
 
 ## API
 
-### `VSCDiff`
+### `VSCodeDiff`
 
-Main diff entry point. Configure with `VSCDiffOptions`:
+Main diff entry point. Configure with `VSCodeDiffOptions`:
 
 ```python
-from vscodiff import VSCDiff, VSCDiffOptions, DiffOptions
+from vscodiff import VSCodeDiff, VSCodeDiffOptions, DiffOptions
 
-options = VSCDiffOptions(
+options = VSCodeDiffOptions(
     diff_options=DiffOptions(
         ignore_trim_whitespace=True,
         max_computation_time_ms=1000,
@@ -59,7 +59,7 @@ options = VSCDiffOptions(
     ),
     cache_size=100,
 )
-diff = VSCDiff(options)
+diff = VSCodeDiff(options)
 result = diff.compute_diff(original_text, modified_text)
 ```
 
@@ -67,11 +67,10 @@ result = diff.compute_diff(original_text, modified_text)
 
 | Type | Description |
 |------|-------------|
-| `VSCDiff` | Main diff engine |
+| `VSCodeDiff` | Main diff engine |
 | `DocumentDiff` | Result: identical, quit_early, changes, moves |
 | `DetailedLineRangeMapping` | A changed line range with inner char-level diffs |
 | `RangeMapping` | Character-level diff range |
-| `LinesDiff` | Raw line diff output (changes + moves + timeout) |
 
 ## License
 

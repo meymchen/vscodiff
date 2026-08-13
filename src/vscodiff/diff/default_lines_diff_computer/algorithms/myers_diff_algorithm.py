@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from vscodiff.common.offset_range import OffsetRange
 from vscodiff.diff.default_lines_diff_computer.algorithms.diff_algorithm import (
     DiffAlgorithm,
@@ -28,11 +30,17 @@ class MyersDiffAlgorithm(DiffAlgorithm):
         seq_y = seq2
 
         def get_x_after_snake(x: int, y: int) -> int:
-            while (
-                x < seq_x.length
-                and y < seq_y.length
-                and seq_x.get_element(x) == seq_y.get_element(y)
-            ):
+            while x < seq_x.length and y < seq_y.length:
+                # Mirror JS semantics: a negative index reads undefined (None
+                # here), and undefined === undefined is true.
+                ex = seq_x.get_element(x) if x >= 0 else None
+                ey = seq_y.get_element(y) if y >= 0 else None
+                if ex is None and ey is None:
+                    pass
+                elif ex is None or ey is None:
+                    break
+                elif ex != ey:
+                    break
                 x += 1
                 y += 1
 
@@ -60,7 +68,13 @@ class MyersDiffAlgorithm(DiffAlgorithm):
             for k in range(lower_bound, upper_bound + 1, 2):
                 max_x_of_d_line_top = -1 if k == upper_bound else v.get(k + 1)
                 max_x_of_d_line_left = -1 if k == lower_bound else v.get(k - 1) + 1
-                x = min(max(max_x_of_d_line_top, max_x_of_d_line_left), seq_x.length)
+                if max_x_of_d_line_top is None:
+                    # JS Math.max(undefined, ...) is NaN, and so is x below.
+                    x = math.nan
+                else:
+                    x = min(
+                        max(max_x_of_d_line_top, max_x_of_d_line_left), seq_x.length
+                    )
                 y = x - k
                 if x > seq_x.length or y > seq_y.length:
                     continue
@@ -135,11 +149,19 @@ class _FastInt32Array:
     def get(self, idx: int) -> int:
         if idx < 0:
             idx = -idx - 1
+            if idx >= len(self._negative_arr):
+                # Mirror JS semantics: an out-of-bounds read on a TypedArray
+                # yields undefined (None here) instead of raising.
+                return None  # type: ignore
             return self._negative_arr[idx]
 
+        if idx >= len(self._positive_arr):
+            return None  # type: ignore
         return self._positive_arr[idx]
 
     def set(self, idx: int, value: int) -> None:
+        if value != value:  # NaN: Int32Array stores it as 0
+            value = 0
         if idx < 0:
             idx = -idx - 1
             if idx >= len(self._negative_arr):
@@ -161,8 +183,14 @@ class _FastArrayNegativeIndices[T]:
     def get(self, idx: int) -> T:
         if idx < 0:
             idx = -idx - 1
+            # Mirror JS semantics: reading an index that was never set yields
+            # undefined (None here) instead of raising.
+            if idx >= len(self._negative_arr):
+                return None  # type: ignore
             return self._negative_arr[idx]
 
+        if idx >= len(self._positive_arr):
+            return None  # type: ignore
         return self._positive_arr[idx]
 
     def set(self, idx: int, value: T) -> None:
