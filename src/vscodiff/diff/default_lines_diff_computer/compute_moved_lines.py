@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cmp_to_key
+import math
 
 from vscodiff.common.line_range import LineRange, LineRangeSet
 from vscodiff.common.lists import (
@@ -42,7 +43,7 @@ def compute_moved_lines(
     if not timeout.is_valid():
         return []
 
-    filtered_changes = [c for c in changes if c not in excluded_changes]
+    filtered_changes = [c for c in changes if id(c) not in excluded_changes]
     unchanged_moves = _compute_unchanged_moves(
         filtered_changes,
         hashed_original_lines,
@@ -77,7 +78,7 @@ def _compute_moves_from_simple_deletions_to_simple_insertions(
     original_lines: list[str],
     modified_lines: list[str],
     timeout: Timeout,
-) -> tuple[list[LineRangeMapping], set[DetailedLineRangeMapping]]:
+) -> tuple[list[LineRangeMapping], set[int]]:
     moves: list[LineRangeMapping] = []
 
     deletions = [
@@ -91,7 +92,7 @@ def _compute_moves_from_simple_deletions_to_simple_insertions(
         if c.original.is_empty and len(c.modified) >= 3
     ]
 
-    excluded_changes: set[DetailedLineRangeMapping] = set()
+    excluded_changes: set[int] = set()
 
     for deletion in deletions:
         highest_similarity = -1.0
@@ -105,8 +106,8 @@ def _compute_moves_from_simple_deletions_to_simple_insertions(
         if highest_similarity > 0.9 and best is not None:
             insertions.remove(best)
             moves.append(LineRangeMapping(deletion.range, best.range))
-            excluded_changes.add(deletion.source)
-            excluded_changes.add(best.source)
+            excluded_changes.add(id(deletion.source))
+            excluded_changes.add(id(best.source))
 
         if not timeout.is_valid():
             return moves, excluded_changes
@@ -382,17 +383,22 @@ def _are_lines_similar(line1: str, line2: str, timeout: Timeout) -> bool:
 
     def count_non_ws_chars(s: str) -> int:
         count = 0
+        # Upstream iterates line1.length regardless of s; out-of-range reads
+        # yield NaN char codes in JS, which count as non-whitespace.
         for i in range(len(line1)):
-            if not is_space(ord(s[i])):
+            if i >= len(s) or not is_space(ord(s[i])):
                 count += 1
 
         return count
 
     longer_line_length = count_non_ws_chars(line1 if len(line1) > len(line2) else line2)
-    return (
-        common_non_space_char_count / longer_line_length > 0.6
-        and longer_line_length > 10
+    # JS: 0 / 0 is NaN (and NaN > 0.6 is false), it does not raise.
+    ratio = (
+        common_non_space_char_count / longer_line_length
+        if longer_line_length > 0
+        else math.nan
     )
+    return ratio > 0.6 and longer_line_length > 10
 
 
 def _join_close_consecutive_moves(

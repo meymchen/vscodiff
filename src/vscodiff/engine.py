@@ -7,11 +7,7 @@ from vscodiff.common.cache import LRUCache
 from vscodiff.common.line_range import LineRange
 from vscodiff.common.range import Range
 from vscodiff.common.strings import split_lines
-from vscodiff.diff.document_diff_provider import (
-    DocumentDiff,
-    DocumentDiffProviderOptions,
-)
-from vscodiff.diff.lines_diff_computer import LinesDiffComputerOptions
+from vscodiff.diff.lines_diff_computer import LinesDiffComputerOptions, MovedText
 from vscodiff.diff.lines_diff_computers import lines_diff_computers
 from vscodiff.diff.range_mapping import DetailedLineRangeMapping, RangeMapping
 
@@ -19,12 +15,24 @@ DiffAlgorithmName = Literal["legacy", "advanced"]
 
 
 @dataclass
-class DiffOptions(DocumentDiffProviderOptions):
+class DiffOptions:
+    ignore_trim_whitespace: bool = True
+    max_computation_time_ms: int = 5000
+    compute_moves: bool = False
+    extend_to_subwords: bool | None = None
     diff_algorithm: DiffAlgorithmName = "advanced"
 
 
 @dataclass
-class VSCDiffOptions:
+class DocumentDiff:
+    identical: bool
+    quit_early: bool
+    changes: list[DetailedLineRangeMapping] = field(default_factory=list)
+    moves: list[MovedText] = field(default_factory=list)
+
+
+@dataclass
+class VSCodeDiffOptions:
     diff_options: DiffOptions = field(
         default_factory=lambda: DiffOptions(
             ignore_trim_whitespace=True,
@@ -37,7 +45,7 @@ class VSCDiffOptions:
     cache_size: int = 100
 
 
-class VSCDiff:
+class VSCodeDiff:
     DEFAULT_CACHE_SIZE = 100
     DEFAULT_DIFF_OPTIONS = DiffOptions(
         ignore_trim_whitespace=True,
@@ -47,16 +55,16 @@ class VSCDiff:
         diff_algorithm="advanced",
     )
 
-    def __init__(self, options: VSCDiffOptions | None = None):
+    def __init__(self, options: VSCodeDiffOptions | None = None):
         if options is None:
-            self._options = VSCDiffOptions(
+            self._options = VSCodeDiffOptions(
                 diff_options=replace(self.DEFAULT_DIFF_OPTIONS),
                 cache_size=self.DEFAULT_CACHE_SIZE,
             )
         else:
             self._options = options
 
-        self._diff_cache: LRUCache[str, DocumentDiff] = LRUCache(
+        self._diff_cache: LRUCache[tuple, DocumentDiff] = LRUCache(
             self._options.cache_size
         )
 
@@ -69,14 +77,17 @@ class VSCDiff:
     def _get_full_range(self, lines: list[str]) -> Range:
         return Range(1, 1, len(lines) + 1, len(lines[-1]) + 1)
 
-    def get_content_key(self, content: str) -> str:
-        return content
-
-    def _get_diff_cache_key(self, original: str, modified: str) -> str:
+    def _get_diff_cache_key(
+        self, original: str, modified: str, options: DiffOptions
+    ) -> tuple:
         return (
-            f"{self.get_content_key(original)}"
-            f"-vscdiff-cache-key-"
-            f"{self.get_content_key(modified)}"
+            original,
+            modified,
+            options.ignore_trim_whitespace,
+            options.max_computation_time_ms,
+            options.compute_moves,
+            options.extend_to_subwords,
+            options.diff_algorithm,
         )
 
     def compute_diff(
@@ -115,12 +126,12 @@ class VSCDiff:
                 moves=[],
             )
 
-        cache_key = self._get_diff_cache_key(original, modified)
+        diff_options = options if options is not None else self._options.diff_options
+        cache_key = self._get_diff_cache_key(original, modified, diff_options)
         cached_result = self._diff_cache.get(cache_key)
         if cached_result is not None:
             return cached_result
 
-        diff_options = options if options is not None else self._options.diff_options
         diff_algorithm = self._get_diff_algorithm(diff_options.diff_algorithm)
         result = diff_algorithm.compute_diff(
             original_lines,

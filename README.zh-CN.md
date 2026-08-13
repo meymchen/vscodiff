@@ -30,9 +30,9 @@ pip install vscodiff
 ## 快速上手
 
 ```python
-from vscodiff import VSCDiff
+from vscodiff import VSCodeDiff
 
-diff = VSCDiff()
+diff = VSCodeDiff()
 
 # 计算两段文本的差异
 result = diff.compute_diff("hello\nworld", "hello\nthere\nworld")
@@ -43,14 +43,14 @@ for change in result.changes:
 
 ## API
 
-### `VSCDiff`
+### `VSCodeDiff`
 
-主入口。通过 `VSCDiffOptions` 配置：
+主入口。通过 `VSCodeDiffOptions` 配置：
 
 ```python
-from vscodiff import VSCDiff, VSCDiffOptions, DiffOptions
+from vscodiff import VSCodeDiff, VSCodeDiffOptions, DiffOptions
 
-options = VSCDiffOptions(
+options = VSCodeDiffOptions(
     diff_options=DiffOptions(
         ignore_trim_whitespace=True,   # 忽略首尾空白
         max_computation_time_ms=1000,  # 最大计算时间（毫秒）
@@ -59,7 +59,7 @@ options = VSCDiffOptions(
     ),
     cache_size=100,  # 缓存大小
 )
-diff = VSCDiff(options)
+diff = VSCodeDiff(options)
 result = diff.compute_diff(original_text, modified_text)
 ```
 
@@ -67,11 +67,10 @@ result = diff.compute_diff(original_text, modified_text)
 
 | 类型 | 说明 |
 |------|------|
-| `VSCDiff` | 主 diff 引擎 |
+| `VSCodeDiff` | 主 diff 引擎 |
 | `DocumentDiff` | 结果：identical, quit_early, changes, moves |
 | `DetailedLineRangeMapping` | 变更行范围，含字符级内部差异 |
 | `RangeMapping` | 字符级差异范围 |
-| `LinesDiff` | 原始行 diff 输出（changes + moves + timeout） |
 
 ## 协议
 
