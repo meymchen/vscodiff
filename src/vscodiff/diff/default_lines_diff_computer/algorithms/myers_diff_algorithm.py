@@ -26,82 +26,105 @@ class MyersDiffAlgorithm(DiffAlgorithm):
         if seq1.length == 0 or seq2.length == 0:
             return DiffAlgorithmResult.trivial(seq1, seq2)
 
-        seq_x = seq1
-        seq_y = seq2
+        found, path = self._find_final_snake_path(seq1, seq2, timeout)
+        if not found:
+            return DiffAlgorithmResult.trivial_timeout(seq1, seq2)
 
-        def get_x_after_snake(x: int, y: int) -> int:
-            while x < seq_x.length and y < seq_y.length:
-                # Mirror JS semantics: a negative index reads undefined (None
-                # here), and undefined === undefined is true.
-                ex = seq_x.get_element(x) if x >= 0 else None
-                ey = seq_y.get_element(y) if y >= 0 else None
-                if ex is None and ey is None:
-                    pass
-                elif ex is None or ey is None:
-                    break
-                elif ex != ey:
-                    break
-                x += 1
-                y += 1
+        result = self._build_diffs(path, seq1.length, seq2.length)
+        return DiffAlgorithmResult(result, False)
 
-            return x
-
+    def _find_final_snake_path(
+        self,
+        seq_x: Sequence,
+        seq_y: Sequence,
+        timeout: Timeout,
+    ) -> tuple[bool, _SnakePath | None]:
+        # Run the O(ND) search. Returns (True, final path) once the end of
+        # both sequences is reached, or (False, None) on timeout. The path may
+        # legitimately be None (no snake recorded on the final diagonal).
         d = 0
         v = _FastInt32Array()
-        v.set(0, get_x_after_snake(0, 0))
+        v.set(0, self._get_x_after_snake(seq_x, seq_y, 0, 0))
 
         paths: _FastArrayNegativeIndices[_SnakePath | None] = (
             _FastArrayNegativeIndices()
         )
         paths.set(0, None if v.get(0) == 0 else _SnakePath(None, 0, 0, v.get(0)))
 
-        k = 0
-
         while True:
             d += 1
             if not timeout.is_valid():
-                return DiffAlgorithmResult.trivial_timeout(seq_x, seq_y)
+                return False, None
 
             lower_bound = -min(d, seq_y.length + (d % 2))
             upper_bound = min(d, seq_x.length + (d % 2))
-            broke = False
             for k in range(lower_bound, upper_bound + 1, 2):
-                max_x_of_d_line_top = -1 if k == upper_bound else v.get(k + 1)
-                max_x_of_d_line_left = -1 if k == lower_bound else v.get(k - 1) + 1
-                if max_x_of_d_line_top is None:
-                    # JS Math.max(undefined, ...) is NaN, and so is x below.
-                    x = math.nan
-                else:
-                    x = min(
-                        max(max_x_of_d_line_top, max_x_of_d_line_left), seq_x.length
-                    )
-                y = x - k
-                if x > seq_x.length or y > seq_y.length:
-                    continue
+                if self._extend_snake_at_k(
+                    seq_x, seq_y, v, paths, k, lower_bound, upper_bound
+                ):
+                    return True, paths.get(k)
 
-                new_max_x = get_x_after_snake(x, y)
-                v.set(k, new_max_x)
-                last_path = (
-                    paths.get(k + 1) if x == max_x_of_d_line_top else paths.get(k - 1)
-                )
-                paths.set(
-                    k,
-                    _SnakePath(last_path, x, y, new_max_x - x)
-                    if new_max_x != x
-                    else last_path,
-                )
+    def _extend_snake_at_k(
+        self,
+        seq_x: Sequence,
+        seq_y: Sequence,
+        v: _FastInt32Array,
+        paths: _FastArrayNegativeIndices[_SnakePath | None],
+        k: int,
+        lower_bound: int,
+        upper_bound: int,
+    ) -> bool:
+        # Advance diagonal k by one d-step. Returns True once the end of both
+        # sequences is reached, False otherwise (including when this diagonal
+        # runs out of bounds and must be skipped).
+        max_x_of_d_line_top = -1 if k == upper_bound else v.get(k + 1)
+        max_x_of_d_line_left = -1 if k == lower_bound else v.get(k - 1) + 1
+        if max_x_of_d_line_top is None:
+            # JS Math.max(undefined, ...) is NaN, and so is x below.
+            x = math.nan
+        else:
+            x = min(max(max_x_of_d_line_top, max_x_of_d_line_left), seq_x.length)
+        y = x - k
+        if x > seq_x.length or y > seq_y.length:
+            return False
 
-                if v.get(k) == seq_x.length and v.get(k) - k == seq_y.length:
-                    broke = True
-                    break
+        new_max_x = self._get_x_after_snake(seq_x, seq_y, x, y)
+        v.set(k, new_max_x)
+        last_path = paths.get(k + 1) if x == max_x_of_d_line_top else paths.get(k - 1)
+        paths.set(
+            k,
+            _SnakePath(last_path, x, y, new_max_x - x) if new_max_x != x else last_path,
+        )
 
-            if broke:
+        return v.get(k) == seq_x.length and v.get(k) - k == seq_y.length
+
+    def _get_x_after_snake(
+        self, seq_x: Sequence, seq_y: Sequence, x: int, y: int
+    ) -> int:
+        while x < seq_x.length and y < seq_y.length:
+            # Mirror JS semantics: a negative index reads undefined (None
+            # here), and undefined === undefined is true.
+            ex = seq_x.get_element(x) if x >= 0 else None
+            ey = seq_y.get_element(y) if y >= 0 else None
+            if ex is None and ey is None:
+                pass
+            elif ex is None or ey is None:
                 break
+            elif ex != ey:
+                break
+            x += 1
+            y += 1
 
-        path = paths.get(k)
+        return x
+
+    def _build_diffs(
+        self, path: _SnakePath | None, len_x: int, len_y: int
+    ) -> list[SequenceDiff]:
+        # Walk the snake path backwards, collecting the diff ranges between
+        # aligning positions, then reverse into forward order.
         result: list[SequenceDiff] = []
-        last_aligning_pos_s1 = seq_x.length
-        last_aligning_pos_s2 = seq_y.length
+        last_aligning_pos_s1 = len_x
+        last_aligning_pos_s2 = len_y
 
         while True:
             end_x = path.x + path.length if path else 0
@@ -124,7 +147,7 @@ class MyersDiffAlgorithm(DiffAlgorithm):
             path = path.prev
 
         result.reverse()
-        return DiffAlgorithmResult(result, False)
+        return result
 
 
 class _SnakePath:

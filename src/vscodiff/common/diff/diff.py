@@ -3,6 +3,7 @@ from __future__ import annotations
 import array
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Callable, cast
 
 from vscodiff.common.hash import string_hash
@@ -119,6 +120,38 @@ class DiffChangeHelper:
             self.mark_next_change()
         self._changes.reverse()
         return self._changes
+
+
+@dataclass
+class _RecursionContext:
+    """The search context shared by the helpers of a single
+    LcsDiff._compute_recursion_point call.
+
+    It bundles the state that is set up once per call (boundaries,
+    diagonal bases/offsets, point vectors, output arrays) together with
+    the diagonal start/end bounds that are updated once per iteration, so
+    the per-iteration helpers do not need to repeat the same long
+    parameter lists. Values that vary within an iteration (diagonal,
+    original_index, ...) are still passed as plain parameters."""
+
+    original_start: int
+    original_end: int
+    modified_start: int
+    modified_end: int
+    diagonal_forward_base: int
+    diagonal_forward_start: int
+    diagonal_forward_end: int
+    diagonal_forward_offset: int
+    diagonal_reverse_base: int
+    diagonal_reverse_start: int
+    diagonal_reverse_end: int
+    diagonal_reverse_offset: int
+    forward_points: list[int]
+    reverse_points: list[int]
+    mid_original_arr: list[int]
+    mid_modified_arr: list[int]
+    delta_is_even: bool
+    quit_early_arr: list[bool]
 
 
 class LcsDiff:
@@ -415,10 +448,64 @@ class LcsDiff:
         delta_is_even: bool,
         quit_early_arr: list[bool],
     ) -> list[DiffChange]:
-        forward_changes: list[DiffChange] | None = None
-        reverse_changes: list[DiffChange] | None = None
-
         # First, walk backward through the forward diagonals history
+        forward_changes = self._walk_forward_trace(
+            diagonal_forward_base,
+            diagonal_forward_start,
+            diagonal_forward_end,
+            diagonal_forward_offset,
+            forward_points,
+            mid_original_arr,
+            mid_modified_arr,
+        )
+
+        if quit_early_arr[0]:
+            reverse_changes = self._get_quit_early_reverse_changes(
+                original_end,
+                modified_end,
+                forward_changes,
+                mid_original_arr,
+                mid_modified_arr,
+            )
+        else:
+            # Now walk backward through the reverse diagonals history
+            reverse_changes = self._walk_reverse_trace(
+                diagonal_reverse_base,
+                diagonal_reverse_start,
+                diagonal_reverse_end,
+                diagonal_reverse_offset,
+                reverse_points,
+                mid_original_arr,
+                mid_modified_arr,
+                delta_is_even,
+            )
+
+        return self._concatenate_changes(forward_changes, reverse_changes)
+
+    @staticmethod
+    def _is_forward_insert_step(
+        diagonal: int,
+        diagonal_min: int,
+        diagonal_max: int,
+        forward_points: list[int],
+    ) -> bool:
+        return diagonal == diagonal_min or (
+            diagonal < diagonal_max
+            and forward_points[diagonal - 1] < forward_points[diagonal + 1]
+        )
+
+    def _walk_forward_trace(
+        self,
+        diagonal_forward_base: int,
+        diagonal_forward_start: int,
+        diagonal_forward_end: int,
+        diagonal_forward_offset: int,
+        forward_points: list[int],
+        mid_original_arr: list[int],
+        mid_modified_arr: list[int],
+    ) -> list[DiffChange]:
+        """Walks backward through the forward diagonals history, collecting
+        the changes in reverse order."""
         change_helper = DiffChangeHelper()
         diagonal_min = diagonal_forward_start
         diagonal_max = diagonal_forward_end
@@ -427,13 +514,14 @@ class LcsDiff:
         )
         last_original_index = int(Constants.MIN_SAFE_SMALL_INT)
         history_index = len(self._forward_history) - 1
+        original_index = 0
+        modified_index = 0
 
         while history_index >= -1:
             diagonal = diagonal_relative + diagonal_forward_base
 
-            if diagonal == diagonal_min or (
-                diagonal < diagonal_max
-                and forward_points[diagonal - 1] < forward_points[diagonal + 1]
+            if self._is_forward_insert_step(
+                diagonal, diagonal_min, diagonal_max, forward_points
             ):
                 # Vertical line (the element is an insert)
                 original_index = forward_points[diagonal + 1]
@@ -465,90 +553,122 @@ class LcsDiff:
 
             history_index -= 1
 
-        forward_changes = change_helper.get_reverse_changes()
+        return change_helper.get_reverse_changes()
 
-        if quit_early_arr[0]:
-            original_start_point = mid_original_arr[0] + 1
-            modified_start_point = mid_modified_arr[0] + 1
+    def _get_quit_early_reverse_changes(
+        self,
+        original_end: int,
+        modified_end: int,
+        forward_changes: list[DiffChange],
+        mid_original_arr: list[int],
+        mid_modified_arr: list[int],
+    ) -> list[DiffChange]:
+        """Builds the single remaining change used when the diff computation
+        quit early, continuing from where the forward changes ended."""
+        original_start_point = mid_original_arr[0] + 1
+        modified_start_point = mid_modified_arr[0] + 1
 
-            if forward_changes and len(forward_changes) > 0:
-                last_forward_change = forward_changes[-1]
-                original_start_point = max(
-                    original_start_point,
-                    last_forward_change.get_original_end(),
-                )
-                modified_start_point = max(
-                    modified_start_point,
-                    last_forward_change.get_modified_end(),
-                )
-
-            reverse_changes = [
-                DiffChange(
-                    original_start_point,
-                    original_end - original_start_point + 1,
-                    modified_start_point,
-                    modified_end - modified_start_point + 1,
-                )
-            ]
-        else:
-            # Now walk backward through the reverse diagonals history
-            change_helper = DiffChangeHelper()
-            diagonal_min = diagonal_reverse_start
-            diagonal_max = diagonal_reverse_end
-            diagonal_relative = (
-                mid_original_arr[0] - mid_modified_arr[0] - diagonal_reverse_offset
+        if forward_changes and len(forward_changes) > 0:
+            last_forward_change = forward_changes[-1]
+            original_start_point = max(
+                original_start_point,
+                last_forward_change.get_original_end(),
             )
-            last_original_index = int(Constants.MAX_SAFE_SMALL_INT)
-            history_index = (
-                len(self._reverse_history) - 1
-                if delta_is_even
-                else len(self._reverse_history) - 2
+            modified_start_point = max(
+                modified_start_point,
+                last_forward_change.get_modified_end(),
             )
 
-            while history_index >= -1:
-                diagonal = diagonal_relative + diagonal_reverse_base
+        return [
+            DiffChange(
+                original_start_point,
+                original_end - original_start_point + 1,
+                modified_start_point,
+                modified_end - modified_start_point + 1,
+            )
+        ]
 
-                if diagonal == diagonal_min or (
-                    diagonal < diagonal_max
-                    and reverse_points[diagonal - 1] >= reverse_points[diagonal + 1]
-                ):
-                    # Horizontal line (the element is a deletion)
-                    original_index = reverse_points[diagonal + 1] - 1
-                    modified_index = (
-                        original_index - diagonal_relative - diagonal_reverse_offset
-                    )
-                    if original_index > last_original_index:
-                        change_helper.mark_next_change()
-                    last_original_index = original_index + 1
-                    change_helper.add_original_element(
-                        original_index + 1, modified_index + 1
-                    )
-                    diagonal_relative = diagonal + 1 - diagonal_reverse_base
-                else:
-                    # Vertical line (the element is an insertion)
-                    original_index = reverse_points[diagonal - 1]
-                    modified_index = (
-                        original_index - diagonal_relative - diagonal_reverse_offset
-                    )
-                    if original_index > last_original_index:
-                        change_helper.mark_next_change()
-                    last_original_index = original_index
-                    change_helper.add_modified_element(
-                        original_index + 1, modified_index + 1
-                    )
-                    diagonal_relative = diagonal - 1 - diagonal_reverse_base
+    @staticmethod
+    def _is_reverse_delete_step(
+        diagonal: int,
+        diagonal_min: int,
+        diagonal_max: int,
+        reverse_points: list[int],
+    ) -> bool:
+        return diagonal == diagonal_min or (
+            diagonal < diagonal_max
+            and reverse_points[diagonal - 1] >= reverse_points[diagonal + 1]
+        )
 
-                if history_index >= 0:
-                    reverse_points = self._reverse_history[history_index]
-                    diagonal_reverse_base = reverse_points[0]
-                    diagonal_min = 1
-                    diagonal_max = len(reverse_points) - 1
+    def _walk_reverse_trace(
+        self,
+        diagonal_reverse_base: int,
+        diagonal_reverse_start: int,
+        diagonal_reverse_end: int,
+        diagonal_reverse_offset: int,
+        reverse_points: list[int],
+        mid_original_arr: list[int],
+        mid_modified_arr: list[int],
+        delta_is_even: bool,
+    ) -> list[DiffChange]:
+        """Walks backward through the reverse diagonals history, collecting
+        the changes in order."""
+        change_helper = DiffChangeHelper()
+        diagonal_min = diagonal_reverse_start
+        diagonal_max = diagonal_reverse_end
+        diagonal_relative = (
+            mid_original_arr[0] - mid_modified_arr[0] - diagonal_reverse_offset
+        )
+        last_original_index = int(Constants.MAX_SAFE_SMALL_INT)
+        history_index = (
+            len(self._reverse_history) - 1
+            if delta_is_even
+            else len(self._reverse_history) - 2
+        )
+        original_index = 0
+        modified_index = 0
 
-                history_index -= 1
+        while history_index >= -1:
+            diagonal = diagonal_relative + diagonal_reverse_base
 
-            reverse_changes = change_helper.get_changes()
+            if self._is_reverse_delete_step(
+                diagonal, diagonal_min, diagonal_max, reverse_points
+            ):
+                # Horizontal line (the element is a deletion)
+                original_index = reverse_points[diagonal + 1] - 1
+                modified_index = (
+                    original_index - diagonal_relative - diagonal_reverse_offset
+                )
+                if original_index > last_original_index:
+                    change_helper.mark_next_change()
+                last_original_index = original_index + 1
+                change_helper.add_original_element(
+                    original_index + 1, modified_index + 1
+                )
+                diagonal_relative = diagonal + 1 - diagonal_reverse_base
+            else:
+                # Vertical line (the element is an insertion)
+                original_index = reverse_points[diagonal - 1]
+                modified_index = (
+                    original_index - diagonal_relative - diagonal_reverse_offset
+                )
+                if original_index > last_original_index:
+                    change_helper.mark_next_change()
+                last_original_index = original_index
+                change_helper.add_modified_element(
+                    original_index + 1, modified_index + 1
+                )
+                diagonal_relative = diagonal - 1 - diagonal_reverse_base
 
-        return self._concatenate_changes(forward_changes, reverse_changes)
+            if history_index >= 0:
+                reverse_points = self._reverse_history[history_index]
+                diagonal_reverse_base = reverse_points[0]
+                diagonal_min = 1
+                diagonal_max = len(reverse_points) - 1
+
+            history_index -= 1
+
+        return change_helper.get_changes()
 
     def _compute_recursion_point(
         self,
@@ -604,293 +724,431 @@ class LcsDiff:
 
         quit_early_arr[0] = False
 
+        ctx = _RecursionContext(
+            original_start=original_start,
+            original_end=original_end,
+            modified_start=modified_start,
+            modified_end=modified_end,
+            diagonal_forward_base=diagonal_forward_base,
+            diagonal_forward_start=diagonal_forward_start,
+            diagonal_forward_end=diagonal_forward_end,
+            diagonal_forward_offset=diagonal_forward_offset,
+            diagonal_reverse_base=diagonal_reverse_base,
+            diagonal_reverse_start=diagonal_reverse_start,
+            diagonal_reverse_end=diagonal_reverse_end,
+            diagonal_reverse_offset=diagonal_reverse_offset,
+            forward_points=forward_points,
+            reverse_points=reverse_points,
+            mid_original_arr=mid_original_arr,
+            mid_modified_arr=mid_modified_arr,
+            delta_is_even=delta_is_even,
+            quit_early_arr=quit_early_arr,
+        )
+
         for num_differences in range(1, max_differences // 2 + 2):
-            furthest_original_index = 0
-            furthest_modified_index = 0
-
             # Run the algorithm in the forward direction
-            diagonal_forward_start = self._clip_diagonal_bound(
-                diagonal_forward_base - num_differences,
+            ctx.diagonal_forward_start = self._clip_diagonal_bound(
+                ctx.diagonal_forward_base - num_differences,
                 num_differences,
-                diagonal_forward_base,
+                ctx.diagonal_forward_base,
                 num_diagonals,
             )
-            diagonal_forward_end = self._clip_diagonal_bound(
-                diagonal_forward_base + num_differences,
+            ctx.diagonal_forward_end = self._clip_diagonal_bound(
+                ctx.diagonal_forward_base + num_differences,
                 num_differences,
-                diagonal_forward_base,
+                ctx.diagonal_forward_base,
                 num_diagonals,
             )
 
-            for diagonal in range(diagonal_forward_start, diagonal_forward_end + 1, 2):
-                # STEP 1: We extend the furthest reaching point in the
-                # present diagonal by looking at the diagonals above and
-                # below and picking the one whose point is further away
-                # from the start point (original_start, modified_start)
-                if diagonal == diagonal_forward_start or (
-                    diagonal < diagonal_forward_end
-                    and forward_points[diagonal - 1] < forward_points[diagonal + 1]
-                ):
-                    original_index = forward_points[diagonal + 1]
-                else:
-                    original_index = forward_points[diagonal - 1] + 1
-
-                modified_index = (
-                    original_index
-                    - (diagonal - diagonal_forward_base)
-                    - diagonal_forward_offset
-                )
-
-                # Save the current original_index so we can test for
-                # false overlap in step 3
-                temp_original_index = original_index
-
-                # STEP 2: We can continue to extend the furthest reaching
-                # point in the present diagonal so long as the elements
-                # are equal.
-                while (
-                    original_index < original_end
-                    and modified_index < modified_end
-                    and self._elements_are_equal(original_index + 1, modified_index + 1)
-                ):
-                    original_index += 1
-                    modified_index += 1
-
-                forward_points[diagonal] = original_index
-
-                if (
-                    original_index + modified_index
-                    > furthest_original_index + furthest_modified_index
-                ):
-                    furthest_original_index = original_index
-                    furthest_modified_index = modified_index
-
-                # STEP 3: If delta is odd (overlap first happens on forward
-                # when delta is odd) and diagonal is in the range of reverse
-                # diagonals computed for num_differences-1 (the previous
-                # iteration; we haven't computed reverse diagonals for
-                # num_differences yet) then check for overlap.
-                if (
-                    not delta_is_even
-                    and abs(diagonal - diagonal_reverse_base) <= num_differences - 1
-                ):
-                    if original_index >= reverse_points[diagonal]:
-                        mid_original_arr[0] = original_index
-                        mid_modified_arr[0] = modified_index
-
-                        if (
-                            temp_original_index <= reverse_points[diagonal]
-                            and _MAX_DIFFERENCES_HISTORY > 0
-                            and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
-                        ):
-                            # BINGO! We overlapped, and we have the full
-                            # trace in memory!
-                            return self._walk_trace(
-                                diagonal_forward_base,
-                                diagonal_forward_start,
-                                diagonal_forward_end,
-                                diagonal_forward_offset,
-                                diagonal_reverse_base,
-                                diagonal_reverse_start,
-                                diagonal_reverse_end,
-                                diagonal_reverse_offset,
-                                forward_points,
-                                reverse_points,
-                                original_index,
-                                original_end,
-                                mid_original_arr,
-                                modified_index,
-                                modified_end,
-                                mid_modified_arr,
-                                delta_is_even,
-                                quit_early_arr,
-                            )
-                        else:
-                            return None
+            (
+                result,
+                should_continue,
+                furthest_original_index,
+                furthest_modified_index,
+                original_index,
+                modified_index,
+            ) = self._run_forward_pass(ctx, num_differences)
+            if not should_continue:
+                return result
 
             # Check to see if we should be quitting early
-            match_length_of_longest = int(
-                (
-                    furthest_original_index
-                    - original_start
-                    + (furthest_modified_index - modified_start)
-                    - num_differences
-                )
-                / 2
+            result, should_continue = self._check_quit_early(
+                ctx,
+                num_differences,
+                furthest_original_index,
+                furthest_modified_index,
+                original_index,
+                modified_index,
             )
-
-            if (
-                self._continue_processing_predicate is not None
-                and not self._continue_processing_predicate(
-                    furthest_original_index, match_length_of_longest
-                )
-            ):
-                quit_early_arr[0] = True
-
-                mid_original_arr[0] = furthest_original_index
-                mid_modified_arr[0] = furthest_modified_index
-
-                if (
-                    match_length_of_longest > 0
-                    and _MAX_DIFFERENCES_HISTORY > 0
-                    and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
-                ):
-                    return self._walk_trace(
-                        diagonal_forward_base,
-                        diagonal_forward_start,
-                        diagonal_forward_end,
-                        diagonal_forward_offset,
-                        diagonal_reverse_base,
-                        diagonal_reverse_start,
-                        diagonal_reverse_end,
-                        diagonal_reverse_offset,
-                        forward_points,
-                        reverse_points,
-                        original_index,
-                        original_end,
-                        mid_original_arr,
-                        modified_index,
-                        modified_end,
-                        mid_modified_arr,
-                        delta_is_even,
-                        quit_early_arr,
-                    )
-                else:
-                    original_start += 1
-                    modified_start += 1
-
-                    return [
-                        DiffChange(
-                            original_start,
-                            original_end - original_start + 1,
-                            modified_start,
-                            modified_end - modified_start + 1,
-                        )
-                    ]
+            if not should_continue:
+                return result
 
             # Run the algorithm in the reverse direction
-            diagonal_reverse_start = self._clip_diagonal_bound(
-                diagonal_reverse_base - num_differences,
+            ctx.diagonal_reverse_start = self._clip_diagonal_bound(
+                ctx.diagonal_reverse_base - num_differences,
                 num_differences,
-                diagonal_reverse_base,
+                ctx.diagonal_reverse_base,
                 num_diagonals,
             )
-            diagonal_reverse_end = self._clip_diagonal_bound(
-                diagonal_reverse_base + num_differences,
+            ctx.diagonal_reverse_end = self._clip_diagonal_bound(
+                ctx.diagonal_reverse_base + num_differences,
                 num_differences,
-                diagonal_reverse_base,
+                ctx.diagonal_reverse_base,
                 num_diagonals,
             )
 
-            for diagonal in range(diagonal_reverse_start, diagonal_reverse_end + 1, 2):
-                # STEP 1: Extend the furthest reaching point in the
-                # present diagonal.
-                if diagonal == diagonal_reverse_start or (
-                    diagonal < diagonal_reverse_end
-                    and reverse_points[diagonal - 1] >= reverse_points[diagonal + 1]
-                ):
-                    original_index = reverse_points[diagonal + 1] - 1
-                else:
-                    original_index = reverse_points[diagonal - 1]
-
-                modified_index = (
-                    original_index
-                    - (diagonal - diagonal_reverse_base)
-                    - diagonal_reverse_offset
-                )
-
-                temp_original_index = original_index
-
-                # STEP 2: Extend as long as elements are equal.
-                while (
-                    original_index > original_start
-                    and modified_index > modified_start
-                    and self._elements_are_equal(original_index, modified_index)
-                ):
-                    original_index -= 1
-                    modified_index -= 1
-
-                reverse_points[diagonal] = original_index
-
-                # STEP 4: If delta is even (overlap first happens on
-                # reverse when delta is even) and diagonal is in the
-                # range of forward diagonals computed for num_differences
-                # then check for overlap.
-                if (
-                    delta_is_even
-                    and abs(diagonal - diagonal_forward_base) <= num_differences
-                ):
-                    if original_index <= forward_points[diagonal]:
-                        mid_original_arr[0] = original_index
-                        mid_modified_arr[0] = modified_index
-
-                        if (
-                            temp_original_index >= forward_points[diagonal]
-                            and _MAX_DIFFERENCES_HISTORY > 0
-                            and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
-                        ):
-                            return self._walk_trace(
-                                diagonal_forward_base,
-                                diagonal_forward_start,
-                                diagonal_forward_end,
-                                diagonal_forward_offset,
-                                diagonal_reverse_base,
-                                diagonal_reverse_start,
-                                diagonal_reverse_end,
-                                diagonal_reverse_offset,
-                                forward_points,
-                                reverse_points,
-                                original_index,
-                                original_end,
-                                mid_original_arr,
-                                modified_index,
-                                modified_end,
-                                mid_modified_arr,
-                                delta_is_even,
-                                quit_early_arr,
-                            )
-                        else:
-                            return None
+            (
+                result,
+                should_continue,
+                original_index,
+                modified_index,
+            ) = self._run_reverse_pass(ctx, num_differences)
+            if not should_continue:
+                return result
 
             # Save current vectors to history before the next iteration
             if num_differences <= _MAX_DIFFERENCES_HISTORY:
-                temp = [diagonal_forward_base - diagonal_forward_start + 1]
-                temp.extend(
-                    forward_points[diagonal_forward_start : diagonal_forward_end + 1]
-                )
-                self._forward_history.append(temp)
-
-                temp = [diagonal_reverse_base - diagonal_reverse_start + 1]
-                temp = [diagonal_reverse_base - diagonal_reverse_start + 1]
-                temp.extend(
-                    reverse_points[diagonal_reverse_start : diagonal_reverse_end + 1]
-                )
-                self._reverse_history.append(temp)
+                self._save_trace_history(ctx)
 
         # If we got here, then we have the full trace in history.
+        return self._walk_trace_from_context(ctx, original_index, modified_index)
+
+    def _walk_trace_from_context(
+        self, ctx: _RecursionContext, original_index: int, modified_index: int
+    ) -> list[DiffChange]:
+        """Walks the collected trace using the shared recursion context."""
         return self._walk_trace(
-            diagonal_forward_base,
-            diagonal_forward_start,
-            diagonal_forward_end,
-            diagonal_forward_offset,
-            diagonal_reverse_base,
-            diagonal_reverse_start,
-            diagonal_reverse_end,
-            diagonal_reverse_offset,
-            forward_points,
-            reverse_points,
+            ctx.diagonal_forward_base,
+            ctx.diagonal_forward_start,
+            ctx.diagonal_forward_end,
+            ctx.diagonal_forward_offset,
+            ctx.diagonal_reverse_base,
+            ctx.diagonal_reverse_start,
+            ctx.diagonal_reverse_end,
+            ctx.diagonal_reverse_offset,
+            ctx.forward_points,
+            ctx.reverse_points,
             original_index,
-            original_end,
-            mid_original_arr,
+            ctx.original_end,
+            ctx.mid_original_arr,
             modified_index,
-            modified_end,
-            mid_modified_arr,
-            delta_is_even,
-            quit_early_arr,
+            ctx.modified_end,
+            ctx.mid_modified_arr,
+            ctx.delta_is_even,
+            ctx.quit_early_arr,
         )
+
+    def _run_forward_pass(
+        self, ctx: _RecursionContext, num_differences: int
+    ) -> tuple[list[DiffChange] | None, bool, int, int, int, int]:
+        """Runs the forward direction of the algorithm for one iteration.
+
+        Returns (result, should_continue, furthest_original_index,
+        furthest_modified_index, original_index, modified_index). When
+        should_continue is False, the caller must return result (which is
+        None when no full trace is available)."""
+        furthest_original_index = 0
+        furthest_modified_index = 0
+        original_index = 0
+        modified_index = 0
+        forward_points = ctx.forward_points
+
+        for diagonal in range(
+            ctx.diagonal_forward_start, ctx.diagonal_forward_end + 1, 2
+        ):
+            # STEP 1: We extend the furthest reaching point in the
+            # present diagonal by looking at the diagonals above and
+            # below and picking the one whose point is further away
+            # from the start point (original_start, modified_start)
+            if diagonal == ctx.diagonal_forward_start or (
+                diagonal < ctx.diagonal_forward_end
+                and forward_points[diagonal - 1] < forward_points[diagonal + 1]
+            ):
+                original_index = forward_points[diagonal + 1]
+            else:
+                original_index = forward_points[diagonal - 1] + 1
+
+            modified_index = (
+                original_index
+                - (diagonal - ctx.diagonal_forward_base)
+                - ctx.diagonal_forward_offset
+            )
+
+            # Save the current original_index so we can test for
+            # false overlap in step 3
+            temp_original_index = original_index
+
+            # STEP 2: We can continue to extend the furthest reaching
+            # point in the present diagonal so long as the elements
+            # are equal.
+            while (
+                original_index < ctx.original_end
+                and modified_index < ctx.modified_end
+                and self._elements_are_equal(original_index + 1, modified_index + 1)
+            ):
+                original_index += 1
+                modified_index += 1
+
+            forward_points[diagonal] = original_index
+
+            if (
+                original_index + modified_index
+                > furthest_original_index + furthest_modified_index
+            ):
+                furthest_original_index = original_index
+                furthest_modified_index = modified_index
+
+            # STEP 3: If delta is odd (overlap first happens on forward
+            # when delta is odd) and diagonal is in the range of reverse
+            # diagonals computed for num_differences-1 (the previous
+            # iteration; we haven't computed reverse diagonals for
+            # num_differences yet) then check for overlap.
+            is_terminal, result = self._forward_overlap(
+                ctx,
+                num_differences,
+                diagonal,
+                original_index,
+                modified_index,
+                temp_original_index,
+            )
+            if is_terminal:
+                return (result, False, 0, 0, 0, 0)
+
+        return (
+            None,
+            True,
+            furthest_original_index,
+            furthest_modified_index,
+            original_index,
+            modified_index,
+        )
+
+    def _forward_overlap(
+        self,
+        ctx: _RecursionContext,
+        num_differences: int,
+        diagonal: int,
+        original_index: int,
+        modified_index: int,
+        temp_original_index: int,
+    ) -> tuple[bool, list[DiffChange] | None]:
+        """Checks for an overlap found during the forward pass (delta odd).
+
+        Returns (is_terminal, result). When is_terminal is True, the caller
+        must return result (None means the full trace is not in memory)."""
+        if (
+            ctx.delta_is_even
+            or abs(diagonal - ctx.diagonal_reverse_base) > num_differences - 1
+        ):
+            return (False, None)
+        if original_index < ctx.reverse_points[diagonal]:
+            return (False, None)
+
+        ctx.mid_original_arr[0] = original_index
+        ctx.mid_modified_arr[0] = modified_index
+
+        if (
+            temp_original_index <= ctx.reverse_points[diagonal]
+            and _MAX_DIFFERENCES_HISTORY > 0
+            and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
+        ):
+            # BINGO! We overlapped, and we have the full trace in memory!
+            return (
+                True,
+                self._walk_trace_from_context(ctx, original_index, modified_index),
+            )
+        return (True, None)
+
+    def _check_quit_early(
+        self,
+        ctx: _RecursionContext,
+        num_differences: int,
+        furthest_original_index: int,
+        furthest_modified_index: int,
+        original_index: int,
+        modified_index: int,
+    ) -> tuple[list[DiffChange] | None, bool]:
+        """Checks the continue-processing predicate after the forward pass.
+
+        Returns (result, should_continue). When should_continue is False,
+        the caller must return result."""
+        match_length_of_longest = int(
+            (
+                furthest_original_index
+                - ctx.original_start
+                + (furthest_modified_index - ctx.modified_start)
+                - num_differences
+            )
+            / 2
+        )
+
+        if (
+            self._continue_processing_predicate is None
+            or self._continue_processing_predicate(
+                furthest_original_index, match_length_of_longest
+            )
+        ):
+            return (None, True)
+
+        ctx.quit_early_arr[0] = True
+
+        ctx.mid_original_arr[0] = furthest_original_index
+        ctx.mid_modified_arr[0] = furthest_modified_index
+
+        if (
+            match_length_of_longest > 0
+            and _MAX_DIFFERENCES_HISTORY > 0
+            and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
+        ):
+            return (
+                self._walk_trace_from_context(ctx, original_index, modified_index),
+                False,
+            )
+
+        original_start = ctx.original_start + 1
+        modified_start = ctx.modified_start + 1
+
+        return (
+            [
+                DiffChange(
+                    original_start,
+                    ctx.original_end - original_start + 1,
+                    modified_start,
+                    ctx.modified_end - modified_start + 1,
+                )
+            ],
+            False,
+        )
+
+    def _run_reverse_pass(
+        self, ctx: _RecursionContext, num_differences: int
+    ) -> tuple[list[DiffChange] | None, bool, int, int]:
+        """Runs the reverse direction of the algorithm for one iteration.
+
+        Returns (result, should_continue, original_index, modified_index).
+        When should_continue is False, the caller must return result (which
+        is None when no full trace is available)."""
+        original_index = 0
+        modified_index = 0
+        reverse_points = ctx.reverse_points
+
+        for diagonal in range(
+            ctx.diagonal_reverse_start, ctx.diagonal_reverse_end + 1, 2
+        ):
+            # STEP 1: Extend the furthest reaching point in the
+            # present diagonal.
+            if diagonal == ctx.diagonal_reverse_start or (
+                diagonal < ctx.diagonal_reverse_end
+                and reverse_points[diagonal - 1] >= reverse_points[diagonal + 1]
+            ):
+                original_index = reverse_points[diagonal + 1] - 1
+            else:
+                original_index = reverse_points[diagonal - 1]
+
+            modified_index = (
+                original_index
+                - (diagonal - ctx.diagonal_reverse_base)
+                - ctx.diagonal_reverse_offset
+            )
+
+            temp_original_index = original_index
+
+            # STEP 2: Extend as long as elements are equal.
+            while (
+                original_index > ctx.original_start
+                and modified_index > ctx.modified_start
+                and self._elements_are_equal(original_index, modified_index)
+            ):
+                original_index -= 1
+                modified_index -= 1
+
+            reverse_points[diagonal] = original_index
+
+            # STEP 4: If delta is even (overlap first happens on
+            # reverse when delta is even) and diagonal is in the
+            # range of forward diagonals computed for num_differences
+            # then check for overlap.
+            is_terminal, result = self._reverse_overlap(
+                ctx,
+                num_differences,
+                diagonal,
+                original_index,
+                modified_index,
+                temp_original_index,
+            )
+            if is_terminal:
+                return (result, False, 0, 0)
+
+        return (None, True, original_index, modified_index)
+
+    def _reverse_overlap(
+        self,
+        ctx: _RecursionContext,
+        num_differences: int,
+        diagonal: int,
+        original_index: int,
+        modified_index: int,
+        temp_original_index: int,
+    ) -> tuple[bool, list[DiffChange] | None]:
+        """Checks for an overlap found during the reverse pass (delta even).
+
+        Returns (is_terminal, result). When is_terminal is True, the caller
+        must return result (None means the full trace is not in memory)."""
+        if (
+            not ctx.delta_is_even
+            or abs(diagonal - ctx.diagonal_forward_base) > num_differences
+        ):
+            return (False, None)
+        if original_index > ctx.forward_points[diagonal]:
+            return (False, None)
+
+        ctx.mid_original_arr[0] = original_index
+        ctx.mid_modified_arr[0] = modified_index
+
+        if (
+            temp_original_index >= ctx.forward_points[diagonal]
+            and _MAX_DIFFERENCES_HISTORY > 0
+            and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
+        ):
+            return (
+                True,
+                self._walk_trace_from_context(ctx, original_index, modified_index),
+            )
+        return (True, None)
+
+    def _save_trace_history(self, ctx: _RecursionContext) -> None:
+        """Saves the current forward and reverse vectors to the history."""
+        temp = [ctx.diagonal_forward_base - ctx.diagonal_forward_start + 1]
+        temp.extend(
+            ctx.forward_points[
+                ctx.diagonal_forward_start : ctx.diagonal_forward_end + 1
+            ]
+        )
+        self._forward_history.append(temp)
+
+        temp = [ctx.diagonal_reverse_base - ctx.diagonal_reverse_start + 1]
+        temp = [ctx.diagonal_reverse_base - ctx.diagonal_reverse_start + 1]
+        temp.extend(
+            ctx.reverse_points[
+                ctx.diagonal_reverse_start : ctx.diagonal_reverse_end + 1
+            ]
+        )
+        self._reverse_history.append(temp)
 
     def _prettify_changes(self, changes: list[DiffChange]) -> list[DiffChange]:
         # Shift all the changes down first
+        self._shift_changes_down(changes)
+
+        # Shift changes back up until we hit empty or whitespace-only lines
+        self._shift_changes_up(changes)
+
+        # There could be multiple longest common substrings.
+        # Give preference to the ones containing longer lines
+        self._prefer_longer_line_matches(changes)
+
+        return changes
+
+    def _shift_changes_down(self, changes: list[DiffChange]) -> None:
         i = 0
         while i < len(changes):
             change = changes[i]
@@ -904,38 +1162,8 @@ class LcsDiff:
                 if i < len(changes) - 1
                 else len(self._modified_elements_or_hash)
             )
-            check_original = change.original_length > 0
-            check_modified = change.modified_length > 0
 
-            while (
-                change.original_start + change.original_length < original_stop
-                and change.modified_start + change.modified_length < modified_stop
-                and (
-                    not check_original
-                    or self._original_elements_are_equal(
-                        change.original_start,
-                        change.original_start + change.original_length,
-                    )
-                )
-                and (
-                    not check_modified
-                    or self._modified_elements_are_equal(
-                        change.modified_start,
-                        change.modified_start + change.modified_length,
-                    )
-                )
-            ):
-                start_strict_equal = self._elements_are_strict_equal(
-                    change.original_start, change.modified_start
-                )
-                end_strict_equal = self._elements_are_strict_equal(
-                    change.original_start + change.original_length,
-                    change.modified_start + change.modified_length,
-                )
-                if end_strict_equal and not start_strict_equal:
-                    break
-                change.original_start += 1
-                change.modified_start += 1
+            self._shift_change_down(change, original_stop, modified_stop)
 
             merged_change_arr: list[DiffChange] = []
             if i < len(changes) - 1 and self._changes_overlap(
@@ -946,7 +1174,45 @@ class LcsDiff:
                 i -= 1
             i += 1
 
-        # Shift changes back up until we hit empty or whitespace-only lines
+    def _shift_change_down(
+        self, change: DiffChange, original_stop: int, modified_stop: int
+    ) -> None:
+        """Shifts a single change down as far as possible without passing
+        original_stop/modified_stop."""
+        check_original = change.original_length > 0
+        check_modified = change.modified_length > 0
+
+        while (
+            change.original_start + change.original_length < original_stop
+            and change.modified_start + change.modified_length < modified_stop
+            and (
+                not check_original
+                or self._original_elements_are_equal(
+                    change.original_start,
+                    change.original_start + change.original_length,
+                )
+            )
+            and (
+                not check_modified
+                or self._modified_elements_are_equal(
+                    change.modified_start,
+                    change.modified_start + change.modified_length,
+                )
+            )
+        ):
+            start_strict_equal = self._elements_are_strict_equal(
+                change.original_start, change.modified_start
+            )
+            end_strict_equal = self._elements_are_strict_equal(
+                change.original_start + change.original_length,
+                change.modified_start + change.modified_length,
+            )
+            if end_strict_equal and not start_strict_equal:
+                break
+            change.original_start += 1
+            change.modified_start += 1
+
+    def _shift_changes_up(self, changes: list[DiffChange]) -> None:
         i = len(changes) - 1
         while i >= 0:
             change = changes[i]
@@ -958,54 +1224,9 @@ class LcsDiff:
                 original_stop = prev_change.original_start + prev_change.original_length
                 modified_stop = prev_change.modified_start + prev_change.modified_length
 
-            check_original = change.original_length > 0
-            check_modified = change.modified_length > 0
-
-            best_delta = 0
-            best_score = self._boundary_score(
-                change.original_start,
-                change.original_length,
-                change.modified_start,
-                change.modified_length,
+            best_delta = self._find_best_shift_up_delta(
+                change, original_stop, modified_stop
             )
-
-            delta = 1
-            while True:
-                orig_start = change.original_start - delta
-                mod_start = change.modified_start - delta
-
-                if orig_start < original_stop or mod_start < modified_stop:
-                    break
-
-                if check_original and not self._original_elements_are_equal(
-                    orig_start,
-                    orig_start + change.original_length,
-                ):
-                    break
-
-                if check_modified and not self._modified_elements_are_equal(
-                    mod_start,
-                    mod_start + change.modified_length,
-                ):
-                    break
-
-                touching_previous_change = (
-                    orig_start == original_stop and mod_start == modified_stop
-                )
-                score = (5 if touching_previous_change else 0) + (
-                    self._boundary_score(
-                        orig_start,
-                        change.original_length,
-                        mod_start,
-                        change.modified_length,
-                    )
-                )
-
-                if score > best_score:
-                    best_score = score
-                    best_delta = delta
-
-                delta += 1
 
             change.original_start -= best_delta
             change.modified_start -= best_delta
@@ -1019,64 +1240,124 @@ class LcsDiff:
                 i += 1
             i -= 1
 
-        # There could be multiple longest common substrings.
-        # Give preference to the ones containing longer lines
-        if self._has_strings:
-            for i in range(1, len(changes)):
-                a_change = changes[i - 1]
-                b_change = changes[i]
-                matched_length = (
-                    b_change.original_start
-                    - a_change.original_start
-                    - a_change.original_length
+    def _can_shift_change_up(
+        self,
+        change: DiffChange,
+        orig_start: int,
+        mod_start: int,
+        original_stop: int,
+        modified_stop: int,
+    ) -> bool:
+        """Checks whether a change can be shifted up to the given start
+        positions without crossing original_stop/modified_stop."""
+        check_original = change.original_length > 0
+        check_modified = change.modified_length > 0
+
+        if orig_start < original_stop or mod_start < modified_stop:
+            return False
+
+        if check_original and not self._original_elements_are_equal(
+            orig_start,
+            orig_start + change.original_length,
+        ):
+            return False
+
+        if check_modified and not self._modified_elements_are_equal(
+            mod_start,
+            mod_start + change.modified_length,
+        ):
+            return False
+
+        return True
+
+    def _find_best_shift_up_delta(
+        self, change: DiffChange, original_stop: int, modified_stop: int
+    ) -> int:
+        """Finds how far a change can be shifted back up, preferring
+        positions with the best boundary score."""
+        best_delta = 0
+        best_score = self._boundary_score(
+            change.original_start,
+            change.original_length,
+            change.modified_start,
+            change.modified_length,
+        )
+
+        delta = 1
+        while True:
+            orig_start = change.original_start - delta
+            mod_start = change.modified_start - delta
+
+            if not self._can_shift_change_up(
+                change, orig_start, mod_start, original_stop, modified_stop
+            ):
+                break
+
+            touching_previous_change = (
+                orig_start == original_stop and mod_start == modified_stop
+            )
+            score = (5 if touching_previous_change else 0) + (
+                self._boundary_score(
+                    orig_start,
+                    change.original_length,
+                    mod_start,
+                    change.modified_length,
                 )
-                a_original_start = a_change.original_start
-                b_original_end = b_change.original_start + b_change.original_length
-                ab_original_length = b_original_end - a_original_start
-                a_modified_start = a_change.modified_start
-                b_modified_end = b_change.modified_start + b_change.modified_length
-                ab_modified_length = b_modified_end - a_modified_start
+            )
 
+            if score > best_score:
+                best_score = score
+                best_delta = delta
+
+            delta += 1
+
+        return best_delta
+
+    def _prefer_longer_line_matches(self, changes: list[DiffChange]) -> None:
+        if not self._has_strings:
+            return
+        for i in range(1, len(changes)):
+            self._prefer_longer_line_match(changes[i - 1], changes[i])
+
+    def _prefer_longer_line_match(
+        self, a_change: DiffChange, b_change: DiffChange
+    ) -> None:
+        matched_length = (
+            b_change.original_start - a_change.original_start - a_change.original_length
+        )
+        a_original_start = a_change.original_start
+        b_original_end = b_change.original_start + b_change.original_length
+        ab_original_length = b_original_end - a_original_start
+        a_modified_start = a_change.modified_start
+        b_modified_end = b_change.modified_start + b_change.modified_length
+        ab_modified_length = b_modified_end - a_modified_start
+
+        if matched_length < 5 and ab_original_length < 20 and ab_modified_length < 20:
+            t = self._find_better_contiguous_sequence(
+                a_original_start,
+                ab_original_length,
+                a_modified_start,
+                ab_modified_length,
+                matched_length,
+            )
+            if t is not None:
+                original_match_start, modified_match_start = t
                 if (
-                    matched_length < 5
-                    and ab_original_length < 20
-                    and ab_modified_length < 20
+                    original_match_start
+                    != a_change.original_start + a_change.original_length
+                    or modified_match_start
+                    != a_change.modified_start + a_change.modified_length
                 ):
-                    t = self._find_better_contiguous_sequence(
-                        a_original_start,
-                        ab_original_length,
-                        a_modified_start,
-                        ab_modified_length,
-                        matched_length,
+                    a_change.original_length = (
+                        original_match_start - a_change.original_start
                     )
-                    if t is not None:
-                        original_match_start, modified_match_start = t
-                        if (
-                            original_match_start
-                            != a_change.original_start + a_change.original_length
-                            or modified_match_start
-                            != a_change.modified_start + a_change.modified_length
-                        ):
-                            a_change.original_length = (
-                                original_match_start - a_change.original_start
-                            )
-                            a_change.modified_length = (
-                                modified_match_start - a_change.modified_start
-                            )
-                            b_change.original_start = (
-                                original_match_start + matched_length
-                            )
-                            b_change.modified_start = (
-                                modified_match_start + matched_length
-                            )
-                            b_change.original_length = (
-                                b_original_end - b_change.original_start
-                            )
-                            b_change.modified_length = (
-                                b_modified_end - b_change.modified_start
-                            )
-
-        return changes
+                    a_change.modified_length = (
+                        modified_match_start - a_change.modified_start
+                    )
+                    b_change.original_start = original_match_start + matched_length
+                    b_change.modified_start = modified_match_start + matched_length
+                    b_change.original_length = b_original_end - b_change.original_start
+                    b_change.modified_length = b_modified_end - b_change.modified_start
 
     def _find_better_contiguous_sequence(
         self,
