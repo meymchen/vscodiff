@@ -3,6 +3,7 @@ from __future__ import annotations
 import array
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Callable, cast
 
 from vscodiff.common.hash import string_hash
@@ -119,6 +120,38 @@ class DiffChangeHelper:
             self.mark_next_change()
         self._changes.reverse()
         return self._changes
+
+
+@dataclass
+class _RecursionContext:
+    """The search context shared by the helpers of a single
+    LcsDiff._compute_recursion_point call.
+
+    It bundles the state that is set up once per call (boundaries,
+    diagonal bases/offsets, point vectors, output arrays) together with
+    the diagonal start/end bounds that are updated once per iteration, so
+    the per-iteration helpers do not need to repeat the same long
+    parameter lists. Values that vary within an iteration (diagonal,
+    original_index, ...) are still passed as plain parameters."""
+
+    original_start: int
+    original_end: int
+    modified_start: int
+    modified_end: int
+    diagonal_forward_base: int
+    diagonal_forward_start: int
+    diagonal_forward_end: int
+    diagonal_forward_offset: int
+    diagonal_reverse_base: int
+    diagonal_reverse_start: int
+    diagonal_reverse_end: int
+    diagonal_reverse_offset: int
+    forward_points: list[int]
+    reverse_points: list[int]
+    mid_original_arr: list[int]
+    mid_modified_arr: list[int]
+    delta_is_even: bool
+    quit_early_arr: list[bool]
 
 
 class LcsDiff:
@@ -691,18 +724,39 @@ class LcsDiff:
 
         quit_early_arr[0] = False
 
+        ctx = _RecursionContext(
+            original_start=original_start,
+            original_end=original_end,
+            modified_start=modified_start,
+            modified_end=modified_end,
+            diagonal_forward_base=diagonal_forward_base,
+            diagonal_forward_start=diagonal_forward_start,
+            diagonal_forward_end=diagonal_forward_end,
+            diagonal_forward_offset=diagonal_forward_offset,
+            diagonal_reverse_base=diagonal_reverse_base,
+            diagonal_reverse_start=diagonal_reverse_start,
+            diagonal_reverse_end=diagonal_reverse_end,
+            diagonal_reverse_offset=diagonal_reverse_offset,
+            forward_points=forward_points,
+            reverse_points=reverse_points,
+            mid_original_arr=mid_original_arr,
+            mid_modified_arr=mid_modified_arr,
+            delta_is_even=delta_is_even,
+            quit_early_arr=quit_early_arr,
+        )
+
         for num_differences in range(1, max_differences // 2 + 2):
             # Run the algorithm in the forward direction
-            diagonal_forward_start = self._clip_diagonal_bound(
-                diagonal_forward_base - num_differences,
+            ctx.diagonal_forward_start = self._clip_diagonal_bound(
+                ctx.diagonal_forward_base - num_differences,
                 num_differences,
-                diagonal_forward_base,
+                ctx.diagonal_forward_base,
                 num_diagonals,
             )
-            diagonal_forward_end = self._clip_diagonal_bound(
-                diagonal_forward_base + num_differences,
+            ctx.diagonal_forward_end = self._clip_diagonal_bound(
+                ctx.diagonal_forward_base + num_differences,
                 num_differences,
-                diagonal_forward_base,
+                ctx.diagonal_forward_base,
                 num_diagonals,
             )
 
@@ -713,68 +767,33 @@ class LcsDiff:
                 furthest_modified_index,
                 original_index,
                 modified_index,
-            ) = self._run_forward_pass(
-                num_differences,
-                original_end,
-                modified_end,
-                diagonal_forward_base,
-                diagonal_forward_start,
-                diagonal_forward_end,
-                diagonal_forward_offset,
-                diagonal_reverse_base,
-                diagonal_reverse_start,
-                diagonal_reverse_end,
-                diagonal_reverse_offset,
-                forward_points,
-                reverse_points,
-                delta_is_even,
-                mid_original_arr,
-                mid_modified_arr,
-                quit_early_arr,
-            )
+            ) = self._run_forward_pass(ctx, num_differences)
             if not should_continue:
                 return result
 
             # Check to see if we should be quitting early
             result, should_continue = self._check_quit_early(
+                ctx,
                 num_differences,
                 furthest_original_index,
                 furthest_modified_index,
-                original_start,
-                original_end,
-                modified_start,
-                modified_end,
-                diagonal_forward_base,
-                diagonal_forward_start,
-                diagonal_forward_end,
-                diagonal_forward_offset,
-                diagonal_reverse_base,
-                diagonal_reverse_start,
-                diagonal_reverse_end,
-                diagonal_reverse_offset,
-                forward_points,
-                reverse_points,
                 original_index,
                 modified_index,
-                delta_is_even,
-                mid_original_arr,
-                mid_modified_arr,
-                quit_early_arr,
             )
             if not should_continue:
                 return result
 
             # Run the algorithm in the reverse direction
-            diagonal_reverse_start = self._clip_diagonal_bound(
-                diagonal_reverse_base - num_differences,
+            ctx.diagonal_reverse_start = self._clip_diagonal_bound(
+                ctx.diagonal_reverse_base - num_differences,
                 num_differences,
-                diagonal_reverse_base,
+                ctx.diagonal_reverse_base,
                 num_diagonals,
             )
-            diagonal_reverse_end = self._clip_diagonal_bound(
-                diagonal_reverse_base + num_differences,
+            ctx.diagonal_reverse_end = self._clip_diagonal_bound(
+                ctx.diagonal_reverse_base + num_differences,
                 num_differences,
-                diagonal_reverse_base,
+                ctx.diagonal_reverse_base,
                 num_diagonals,
             )
 
@@ -783,84 +802,44 @@ class LcsDiff:
                 should_continue,
                 original_index,
                 modified_index,
-            ) = self._run_reverse_pass(
-                num_differences,
-                original_start,
-                original_end,
-                modified_start,
-                modified_end,
-                diagonal_forward_base,
-                diagonal_forward_start,
-                diagonal_forward_end,
-                diagonal_forward_offset,
-                diagonal_reverse_base,
-                diagonal_reverse_start,
-                diagonal_reverse_end,
-                diagonal_reverse_offset,
-                forward_points,
-                reverse_points,
-                delta_is_even,
-                mid_original_arr,
-                mid_modified_arr,
-                quit_early_arr,
-            )
+            ) = self._run_reverse_pass(ctx, num_differences)
             if not should_continue:
                 return result
 
             # Save current vectors to history before the next iteration
             if num_differences <= _MAX_DIFFERENCES_HISTORY:
-                self._save_trace_history(
-                    diagonal_forward_base,
-                    diagonal_forward_start,
-                    diagonal_forward_end,
-                    diagonal_reverse_base,
-                    diagonal_reverse_start,
-                    diagonal_reverse_end,
-                    forward_points,
-                    reverse_points,
-                )
+                self._save_trace_history(ctx)
 
         # If we got here, then we have the full trace in history.
+        return self._walk_trace_from_context(ctx, original_index, modified_index)
+
+    def _walk_trace_from_context(
+        self, ctx: _RecursionContext, original_index: int, modified_index: int
+    ) -> list[DiffChange]:
+        """Walks the collected trace using the shared recursion context."""
         return self._walk_trace(
-            diagonal_forward_base,
-            diagonal_forward_start,
-            diagonal_forward_end,
-            diagonal_forward_offset,
-            diagonal_reverse_base,
-            diagonal_reverse_start,
-            diagonal_reverse_end,
-            diagonal_reverse_offset,
-            forward_points,
-            reverse_points,
+            ctx.diagonal_forward_base,
+            ctx.diagonal_forward_start,
+            ctx.diagonal_forward_end,
+            ctx.diagonal_forward_offset,
+            ctx.diagonal_reverse_base,
+            ctx.diagonal_reverse_start,
+            ctx.diagonal_reverse_end,
+            ctx.diagonal_reverse_offset,
+            ctx.forward_points,
+            ctx.reverse_points,
             original_index,
-            original_end,
-            mid_original_arr,
+            ctx.original_end,
+            ctx.mid_original_arr,
             modified_index,
-            modified_end,
-            mid_modified_arr,
-            delta_is_even,
-            quit_early_arr,
+            ctx.modified_end,
+            ctx.mid_modified_arr,
+            ctx.delta_is_even,
+            ctx.quit_early_arr,
         )
 
     def _run_forward_pass(
-        self,
-        num_differences: int,
-        original_end: int,
-        modified_end: int,
-        diagonal_forward_base: int,
-        diagonal_forward_start: int,
-        diagonal_forward_end: int,
-        diagonal_forward_offset: int,
-        diagonal_reverse_base: int,
-        diagonal_reverse_start: int,
-        diagonal_reverse_end: int,
-        diagonal_reverse_offset: int,
-        forward_points: list[int],
-        reverse_points: list[int],
-        delta_is_even: bool,
-        mid_original_arr: list[int],
-        mid_modified_arr: list[int],
-        quit_early_arr: list[bool],
+        self, ctx: _RecursionContext, num_differences: int
     ) -> tuple[list[DiffChange] | None, bool, int, int, int, int]:
         """Runs the forward direction of the algorithm for one iteration.
 
@@ -872,14 +851,17 @@ class LcsDiff:
         furthest_modified_index = 0
         original_index = 0
         modified_index = 0
+        forward_points = ctx.forward_points
 
-        for diagonal in range(diagonal_forward_start, diagonal_forward_end + 1, 2):
+        for diagonal in range(
+            ctx.diagonal_forward_start, ctx.diagonal_forward_end + 1, 2
+        ):
             # STEP 1: We extend the furthest reaching point in the
             # present diagonal by looking at the diagonals above and
             # below and picking the one whose point is further away
             # from the start point (original_start, modified_start)
-            if diagonal == diagonal_forward_start or (
-                diagonal < diagonal_forward_end
+            if diagonal == ctx.diagonal_forward_start or (
+                diagonal < ctx.diagonal_forward_end
                 and forward_points[diagonal - 1] < forward_points[diagonal + 1]
             ):
                 original_index = forward_points[diagonal + 1]
@@ -888,8 +870,8 @@ class LcsDiff:
 
             modified_index = (
                 original_index
-                - (diagonal - diagonal_forward_base)
-                - diagonal_forward_offset
+                - (diagonal - ctx.diagonal_forward_base)
+                - ctx.diagonal_forward_offset
             )
 
             # Save the current original_index so we can test for
@@ -900,8 +882,8 @@ class LcsDiff:
             # point in the present diagonal so long as the elements
             # are equal.
             while (
-                original_index < original_end
-                and modified_index < modified_end
+                original_index < ctx.original_end
+                and modified_index < ctx.modified_end
                 and self._elements_are_equal(original_index + 1, modified_index + 1)
             ):
                 original_index += 1
@@ -922,27 +904,12 @@ class LcsDiff:
             # iteration; we haven't computed reverse diagonals for
             # num_differences yet) then check for overlap.
             is_terminal, result = self._forward_overlap(
+                ctx,
                 num_differences,
                 diagonal,
                 original_index,
                 modified_index,
                 temp_original_index,
-                original_end,
-                modified_end,
-                diagonal_forward_base,
-                diagonal_forward_start,
-                diagonal_forward_end,
-                diagonal_forward_offset,
-                diagonal_reverse_base,
-                diagonal_reverse_start,
-                diagonal_reverse_end,
-                diagonal_reverse_offset,
-                forward_points,
-                reverse_points,
-                delta_is_even,
-                mid_original_arr,
-                mid_modified_arr,
-                quit_early_arr,
             )
             if is_terminal:
                 return (result, False, 0, 0, 0, 0)
@@ -958,96 +925,48 @@ class LcsDiff:
 
     def _forward_overlap(
         self,
+        ctx: _RecursionContext,
         num_differences: int,
         diagonal: int,
         original_index: int,
         modified_index: int,
         temp_original_index: int,
-        original_end: int,
-        modified_end: int,
-        diagonal_forward_base: int,
-        diagonal_forward_start: int,
-        diagonal_forward_end: int,
-        diagonal_forward_offset: int,
-        diagonal_reverse_base: int,
-        diagonal_reverse_start: int,
-        diagonal_reverse_end: int,
-        diagonal_reverse_offset: int,
-        forward_points: list[int],
-        reverse_points: list[int],
-        delta_is_even: bool,
-        mid_original_arr: list[int],
-        mid_modified_arr: list[int],
-        quit_early_arr: list[bool],
     ) -> tuple[bool, list[DiffChange] | None]:
         """Checks for an overlap found during the forward pass (delta odd).
 
         Returns (is_terminal, result). When is_terminal is True, the caller
         must return result (None means the full trace is not in memory)."""
-        if delta_is_even or abs(diagonal - diagonal_reverse_base) > num_differences - 1:
+        if (
+            ctx.delta_is_even
+            or abs(diagonal - ctx.diagonal_reverse_base) > num_differences - 1
+        ):
             return (False, None)
-        if original_index < reverse_points[diagonal]:
+        if original_index < ctx.reverse_points[diagonal]:
             return (False, None)
 
-        mid_original_arr[0] = original_index
-        mid_modified_arr[0] = modified_index
+        ctx.mid_original_arr[0] = original_index
+        ctx.mid_modified_arr[0] = modified_index
 
         if (
-            temp_original_index <= reverse_points[diagonal]
+            temp_original_index <= ctx.reverse_points[diagonal]
             and _MAX_DIFFERENCES_HISTORY > 0
             and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
         ):
             # BINGO! We overlapped, and we have the full trace in memory!
             return (
                 True,
-                self._walk_trace(
-                    diagonal_forward_base,
-                    diagonal_forward_start,
-                    diagonal_forward_end,
-                    diagonal_forward_offset,
-                    diagonal_reverse_base,
-                    diagonal_reverse_start,
-                    diagonal_reverse_end,
-                    diagonal_reverse_offset,
-                    forward_points,
-                    reverse_points,
-                    original_index,
-                    original_end,
-                    mid_original_arr,
-                    modified_index,
-                    modified_end,
-                    mid_modified_arr,
-                    delta_is_even,
-                    quit_early_arr,
-                ),
+                self._walk_trace_from_context(ctx, original_index, modified_index),
             )
         return (True, None)
 
     def _check_quit_early(
         self,
+        ctx: _RecursionContext,
         num_differences: int,
         furthest_original_index: int,
         furthest_modified_index: int,
-        original_start: int,
-        original_end: int,
-        modified_start: int,
-        modified_end: int,
-        diagonal_forward_base: int,
-        diagonal_forward_start: int,
-        diagonal_forward_end: int,
-        diagonal_forward_offset: int,
-        diagonal_reverse_base: int,
-        diagonal_reverse_start: int,
-        diagonal_reverse_end: int,
-        diagonal_reverse_offset: int,
-        forward_points: list[int],
-        reverse_points: list[int],
         original_index: int,
         modified_index: int,
-        delta_is_even: bool,
-        mid_original_arr: list[int],
-        mid_modified_arr: list[int],
-        quit_early_arr: list[bool],
     ) -> tuple[list[DiffChange] | None, bool]:
         """Checks the continue-processing predicate after the forward pass.
 
@@ -1056,8 +975,8 @@ class LcsDiff:
         match_length_of_longest = int(
             (
                 furthest_original_index
-                - original_start
-                + (furthest_modified_index - modified_start)
+                - ctx.original_start
+                + (furthest_modified_index - ctx.modified_start)
                 - num_differences
             )
             / 2
@@ -1071,10 +990,10 @@ class LcsDiff:
         ):
             return (None, True)
 
-        quit_early_arr[0] = True
+        ctx.quit_early_arr[0] = True
 
-        mid_original_arr[0] = furthest_original_index
-        mid_modified_arr[0] = furthest_modified_index
+        ctx.mid_original_arr[0] = furthest_original_index
+        ctx.mid_modified_arr[0] = furthest_modified_index
 
         if (
             match_length_of_longest > 0
@@ -1082,65 +1001,27 @@ class LcsDiff:
             and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
         ):
             return (
-                self._walk_trace(
-                    diagonal_forward_base,
-                    diagonal_forward_start,
-                    diagonal_forward_end,
-                    diagonal_forward_offset,
-                    diagonal_reverse_base,
-                    diagonal_reverse_start,
-                    diagonal_reverse_end,
-                    diagonal_reverse_offset,
-                    forward_points,
-                    reverse_points,
-                    original_index,
-                    original_end,
-                    mid_original_arr,
-                    modified_index,
-                    modified_end,
-                    mid_modified_arr,
-                    delta_is_even,
-                    quit_early_arr,
-                ),
+                self._walk_trace_from_context(ctx, original_index, modified_index),
                 False,
             )
 
-        original_start += 1
-        modified_start += 1
+        original_start = ctx.original_start + 1
+        modified_start = ctx.modified_start + 1
 
         return (
             [
                 DiffChange(
                     original_start,
-                    original_end - original_start + 1,
+                    ctx.original_end - original_start + 1,
                     modified_start,
-                    modified_end - modified_start + 1,
+                    ctx.modified_end - modified_start + 1,
                 )
             ],
             False,
         )
 
     def _run_reverse_pass(
-        self,
-        num_differences: int,
-        original_start: int,
-        original_end: int,
-        modified_start: int,
-        modified_end: int,
-        diagonal_forward_base: int,
-        diagonal_forward_start: int,
-        diagonal_forward_end: int,
-        diagonal_forward_offset: int,
-        diagonal_reverse_base: int,
-        diagonal_reverse_start: int,
-        diagonal_reverse_end: int,
-        diagonal_reverse_offset: int,
-        forward_points: list[int],
-        reverse_points: list[int],
-        delta_is_even: bool,
-        mid_original_arr: list[int],
-        mid_modified_arr: list[int],
-        quit_early_arr: list[bool],
+        self, ctx: _RecursionContext, num_differences: int
     ) -> tuple[list[DiffChange] | None, bool, int, int]:
         """Runs the reverse direction of the algorithm for one iteration.
 
@@ -1149,12 +1030,15 @@ class LcsDiff:
         is None when no full trace is available)."""
         original_index = 0
         modified_index = 0
+        reverse_points = ctx.reverse_points
 
-        for diagonal in range(diagonal_reverse_start, diagonal_reverse_end + 1, 2):
+        for diagonal in range(
+            ctx.diagonal_reverse_start, ctx.diagonal_reverse_end + 1, 2
+        ):
             # STEP 1: Extend the furthest reaching point in the
             # present diagonal.
-            if diagonal == diagonal_reverse_start or (
-                diagonal < diagonal_reverse_end
+            if diagonal == ctx.diagonal_reverse_start or (
+                diagonal < ctx.diagonal_reverse_end
                 and reverse_points[diagonal - 1] >= reverse_points[diagonal + 1]
             ):
                 original_index = reverse_points[diagonal + 1] - 1
@@ -1163,16 +1047,16 @@ class LcsDiff:
 
             modified_index = (
                 original_index
-                - (diagonal - diagonal_reverse_base)
-                - diagonal_reverse_offset
+                - (diagonal - ctx.diagonal_reverse_base)
+                - ctx.diagonal_reverse_offset
             )
 
             temp_original_index = original_index
 
             # STEP 2: Extend as long as elements are equal.
             while (
-                original_index > original_start
-                and modified_index > modified_start
+                original_index > ctx.original_start
+                and modified_index > ctx.modified_start
                 and self._elements_are_equal(original_index, modified_index)
             ):
                 original_index -= 1
@@ -1185,27 +1069,12 @@ class LcsDiff:
             # range of forward diagonals computed for num_differences
             # then check for overlap.
             is_terminal, result = self._reverse_overlap(
+                ctx,
                 num_differences,
                 diagonal,
                 original_index,
                 modified_index,
                 temp_original_index,
-                original_end,
-                modified_end,
-                diagonal_forward_base,
-                diagonal_forward_start,
-                diagonal_forward_end,
-                diagonal_forward_offset,
-                diagonal_reverse_base,
-                diagonal_reverse_start,
-                diagonal_reverse_end,
-                diagonal_reverse_offset,
-                forward_points,
-                reverse_points,
-                delta_is_even,
-                mid_original_arr,
-                mid_modified_arr,
-                quit_early_arr,
             )
             if is_terminal:
                 return (result, False, 0, 0)
@@ -1214,89 +1083,56 @@ class LcsDiff:
 
     def _reverse_overlap(
         self,
+        ctx: _RecursionContext,
         num_differences: int,
         diagonal: int,
         original_index: int,
         modified_index: int,
         temp_original_index: int,
-        original_end: int,
-        modified_end: int,
-        diagonal_forward_base: int,
-        diagonal_forward_start: int,
-        diagonal_forward_end: int,
-        diagonal_forward_offset: int,
-        diagonal_reverse_base: int,
-        diagonal_reverse_start: int,
-        diagonal_reverse_end: int,
-        diagonal_reverse_offset: int,
-        forward_points: list[int],
-        reverse_points: list[int],
-        delta_is_even: bool,
-        mid_original_arr: list[int],
-        mid_modified_arr: list[int],
-        quit_early_arr: list[bool],
     ) -> tuple[bool, list[DiffChange] | None]:
         """Checks for an overlap found during the reverse pass (delta even).
 
         Returns (is_terminal, result). When is_terminal is True, the caller
         must return result (None means the full trace is not in memory)."""
-        if not delta_is_even or abs(diagonal - diagonal_forward_base) > num_differences:
+        if (
+            not ctx.delta_is_even
+            or abs(diagonal - ctx.diagonal_forward_base) > num_differences
+        ):
             return (False, None)
-        if original_index > forward_points[diagonal]:
+        if original_index > ctx.forward_points[diagonal]:
             return (False, None)
 
-        mid_original_arr[0] = original_index
-        mid_modified_arr[0] = modified_index
+        ctx.mid_original_arr[0] = original_index
+        ctx.mid_modified_arr[0] = modified_index
 
         if (
-            temp_original_index >= forward_points[diagonal]
+            temp_original_index >= ctx.forward_points[diagonal]
             and _MAX_DIFFERENCES_HISTORY > 0
             and num_differences <= _MAX_DIFFERENCES_HISTORY + 1
         ):
             return (
                 True,
-                self._walk_trace(
-                    diagonal_forward_base,
-                    diagonal_forward_start,
-                    diagonal_forward_end,
-                    diagonal_forward_offset,
-                    diagonal_reverse_base,
-                    diagonal_reverse_start,
-                    diagonal_reverse_end,
-                    diagonal_reverse_offset,
-                    forward_points,
-                    reverse_points,
-                    original_index,
-                    original_end,
-                    mid_original_arr,
-                    modified_index,
-                    modified_end,
-                    mid_modified_arr,
-                    delta_is_even,
-                    quit_early_arr,
-                ),
+                self._walk_trace_from_context(ctx, original_index, modified_index),
             )
         return (True, None)
 
-    def _save_trace_history(
-        self,
-        diagonal_forward_base: int,
-        diagonal_forward_start: int,
-        diagonal_forward_end: int,
-        diagonal_reverse_base: int,
-        diagonal_reverse_start: int,
-        diagonal_reverse_end: int,
-        forward_points: list[int],
-        reverse_points: list[int],
-    ) -> None:
+    def _save_trace_history(self, ctx: _RecursionContext) -> None:
         """Saves the current forward and reverse vectors to the history."""
-        temp = [diagonal_forward_base - diagonal_forward_start + 1]
-        temp.extend(forward_points[diagonal_forward_start : diagonal_forward_end + 1])
+        temp = [ctx.diagonal_forward_base - ctx.diagonal_forward_start + 1]
+        temp.extend(
+            ctx.forward_points[
+                ctx.diagonal_forward_start : ctx.diagonal_forward_end + 1
+            ]
+        )
         self._forward_history.append(temp)
 
-        temp = [diagonal_reverse_base - diagonal_reverse_start + 1]
-        temp = [diagonal_reverse_base - diagonal_reverse_start + 1]
-        temp.extend(reverse_points[diagonal_reverse_start : diagonal_reverse_end + 1])
+        temp = [ctx.diagonal_reverse_base - ctx.diagonal_reverse_start + 1]
+        temp = [ctx.diagonal_reverse_base - ctx.diagonal_reverse_start + 1]
+        temp.extend(
+            ctx.reverse_points[
+                ctx.diagonal_reverse_start : ctx.diagonal_reverse_end + 1
+            ]
+        )
         self._reverse_history.append(temp)
 
     def _prettify_changes(self, changes: list[DiffChange]) -> list[DiffChange]:
