@@ -160,7 +160,8 @@ class _FastInt32Array:
         return self._positive_arr[idx]
 
     def set(self, idx: int, value: int) -> None:
-        if value != value:  # NaN: Int32Array stores it as 0
+        # Mirror JS semantics: an Int32Array stores NaN as 0.
+        if math.isnan(value):
             value = 0
         if idx < 0:
             idx = -idx - 1
