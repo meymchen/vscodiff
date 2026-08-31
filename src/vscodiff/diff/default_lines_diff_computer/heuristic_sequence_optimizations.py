@@ -41,83 +41,128 @@ def _join_sequence_diffs_by_shifting(
     result.append(sequence_diffs[0])
 
     for i in range(1, len(sequence_diffs)):
-        prev_result = result[-1]
-        cur = sequence_diffs[i]
-
-        if cur.seq1_range.is_empty or cur.seq2_range.is_empty:
-            length = cur.seq1_range.start - prev_result.seq1_range.end_exclusive
-            d = 1
-            while d <= length:
-                if sequence1.get_element(
-                    cur.seq1_range.start - d
-                ) != sequence1.get_element(
-                    cur.seq1_range.end_exclusive - d
-                ) or sequence2.get_element(
-                    cur.seq2_range.start - d
-                ) != sequence2.get_element(cur.seq2_range.end_exclusive - d):
-                    break
-
-                d += 1
-
-            d -= 1
-
-            if d == length:
-                result[-1] = SequenceDiff(
-                    OffsetRange(
-                        prev_result.seq1_range.start,
-                        cur.seq1_range.end_exclusive - length,
-                    ),
-                    OffsetRange(
-                        prev_result.seq2_range.start,
-                        cur.seq2_range.end_exclusive - length,
-                    ),
-                )
-                continue
-
-            cur = cur.delta(-d)
-
-        result.append(cur)
+        _shift_diff_backward_and_append(sequence1, sequence2, result, sequence_diffs[i])
 
     result2: list[SequenceDiff] = []
     for i in range(len(result) - 1):
-        next_result = result[i + 1]
-        cur = result[i]
-
-        if cur.seq1_range.is_empty or cur.seq2_range.is_empty:
-            length = next_result.seq1_range.start - cur.seq1_range.end_exclusive
-            d = 0
-            while d < length:
-                if not sequence1.is_strongly_equal(
-                    cur.seq1_range.start + d, cur.seq1_range.end_exclusive + d
-                ) or not sequence2.is_strongly_equal(
-                    cur.seq2_range.start + d, cur.seq2_range.end_exclusive + d
-                ):
-                    break
-
-                d += 1
-
-            if d == length:
-                result[i + 1] = SequenceDiff(
-                    OffsetRange(
-                        cur.seq1_range.start + length,
-                        next_result.seq1_range.end_exclusive,
-                    ),
-                    OffsetRange(
-                        cur.seq2_range.start + length,
-                        next_result.seq2_range.end_exclusive,
-                    ),
-                )
-                continue
-
-            if d > 0:
-                cur = cur.delta(d)
-
-        result2.append(cur)
+        shifted = _shift_diff_forward(sequence1, sequence2, result, i)
+        if shifted is not None:
+            result2.append(shifted)
 
     if len(result) > 0:
         result2.append(result[-1])
 
     return result2
+
+
+def _shift_diff_backward_and_append(
+    sequence1: Sequence,
+    sequence2: Sequence,
+    result: list[SequenceDiff],
+    cur: SequenceDiff,
+) -> None:
+    """
+    Shifts `cur` up as far as possible and appends it to `result`,
+    or merges it into the previous diff if it can be shifted up entirely.
+    """
+    prev_result = result[-1]
+
+    if cur.seq1_range.is_empty or cur.seq2_range.is_empty:
+        length = cur.seq1_range.start - prev_result.seq1_range.end_exclusive
+        d = _find_max_backward_shift(sequence1, sequence2, cur, length)
+
+        if d == length:
+            result[-1] = SequenceDiff(
+                OffsetRange(
+                    prev_result.seq1_range.start,
+                    cur.seq1_range.end_exclusive - length,
+                ),
+                OffsetRange(
+                    prev_result.seq2_range.start,
+                    cur.seq2_range.end_exclusive - length,
+                ),
+            )
+            return
+
+        cur = cur.delta(-d)
+
+    result.append(cur)
+
+
+def _find_max_backward_shift(
+    sequence1: Sequence,
+    sequence2: Sequence,
+    cur: SequenceDiff,
+    length: int,
+) -> int:
+    d = 1
+    while d <= length:
+        if sequence1.get_element(cur.seq1_range.start - d) != sequence1.get_element(
+            cur.seq1_range.end_exclusive - d
+        ) or sequence2.get_element(cur.seq2_range.start - d) != sequence2.get_element(
+            cur.seq2_range.end_exclusive - d
+        ):
+            break
+
+        d += 1
+
+    return d - 1
+
+
+def _shift_diff_forward(
+    sequence1: Sequence,
+    sequence2: Sequence,
+    result: list[SequenceDiff],
+    i: int,
+) -> SequenceDiff | None:
+    """
+    Shifts the diff at index `i` down as far as possible and returns it,
+    or returns None if it was merged into the next diff.
+    """
+    next_result = result[i + 1]
+    cur = result[i]
+
+    if cur.seq1_range.is_empty or cur.seq2_range.is_empty:
+        length = next_result.seq1_range.start - cur.seq1_range.end_exclusive
+        d = _find_max_forward_shift(sequence1, sequence2, cur, length)
+
+        if d == length:
+            result[i + 1] = SequenceDiff(
+                OffsetRange(
+                    cur.seq1_range.start + length,
+                    next_result.seq1_range.end_exclusive,
+                ),
+                OffsetRange(
+                    cur.seq2_range.start + length,
+                    next_result.seq2_range.end_exclusive,
+                ),
+            )
+            return None
+
+        if d > 0:
+            cur = cur.delta(d)
+
+    return cur
+
+
+def _find_max_forward_shift(
+    sequence1: Sequence,
+    sequence2: Sequence,
+    cur: SequenceDiff,
+    length: int,
+) -> int:
+    d = 0
+    while d < length:
+        if not sequence1.is_strongly_equal(
+            cur.seq1_range.start + d, cur.seq1_range.end_exclusive + d
+        ) or not sequence2.is_strongly_equal(
+            cur.seq2_range.start + d, cur.seq2_range.end_exclusive + d
+        ):
+            break
+
+        d += 1
+
+    return d
 
 
 def _shift_sequence_diffs(
@@ -127,36 +172,64 @@ def _shift_sequence_diffs(
 ) -> list[SequenceDiff]:
     for i in range(len(sequence_diffs)):
         prev_diff = sequence_diffs[i - 1] if i > 0 else None
-        diff = sequence_diffs[i]
         next_diff = sequence_diffs[i + 1] if i + 1 < len(sequence_diffs) else None
 
-        seq1_valid_range = OffsetRange(
-            prev_diff.seq1_range.end_exclusive + 1 if prev_diff else 0,
-            next_diff.seq1_range.start - 1 if next_diff else sequence1.length,
-        )
-        seq2_valid_range = OffsetRange(
-            prev_diff.seq2_range.end_exclusive + 1 if prev_diff else 0,
-            next_diff.seq2_range.start - 1 if next_diff else sequence2.length,
+        seq1_valid_range, seq2_valid_range = _get_valid_shift_ranges(
+            sequence1, sequence2, prev_diff, next_diff
         )
 
-        if diff.seq1_range.is_empty:
-            sequence_diffs[i] = _shift_diff_to_better_position(
-                diff,
-                sequence1,
-                sequence2,
-                seq1_valid_range,
-                seq2_valid_range,
-            )
-        elif diff.seq2_range.is_empty:
-            sequence_diffs[i] = _shift_diff_to_better_position(
-                diff.swap(),
-                sequence2,
-                sequence1,
-                seq2_valid_range,
-                seq1_valid_range,
-            ).swap()
+        sequence_diffs[i] = _shift_empty_range_diff(
+            sequence_diffs[i],
+            sequence1,
+            sequence2,
+            seq1_valid_range,
+            seq2_valid_range,
+        )
 
     return sequence_diffs
+
+
+def _get_valid_shift_ranges(
+    sequence1: Sequence,
+    sequence2: Sequence,
+    prev_diff: SequenceDiff | None,
+    next_diff: SequenceDiff | None,
+) -> tuple[OffsetRange, OffsetRange]:
+    seq1_valid_range = OffsetRange(
+        prev_diff.seq1_range.end_exclusive + 1 if prev_diff else 0,
+        next_diff.seq1_range.start - 1 if next_diff else sequence1.length,
+    )
+    seq2_valid_range = OffsetRange(
+        prev_diff.seq2_range.end_exclusive + 1 if prev_diff else 0,
+        next_diff.seq2_range.start - 1 if next_diff else sequence2.length,
+    )
+    return seq1_valid_range, seq2_valid_range
+
+
+def _shift_empty_range_diff(
+    diff: SequenceDiff,
+    sequence1: Sequence,
+    sequence2: Sequence,
+    seq1_valid_range: OffsetRange,
+    seq2_valid_range: OffsetRange,
+) -> SequenceDiff:
+    if diff.seq1_range.is_empty:
+        return _shift_diff_to_better_position(
+            diff,
+            sequence1,
+            sequence2,
+            seq1_valid_range,
+            seq2_valid_range,
+        )
+    if diff.seq2_range.is_empty:
+        return _shift_diff_to_better_position(
+            diff.swap(),
+            sequence2,
+            sequence1,
+            seq2_valid_range,
+            seq1_valid_range,
+        ).swap()
+    return diff
 
 
 def _shift_diff_to_better_position(
@@ -272,37 +345,17 @@ def extend_diffs_to_entire_word_if_appropriate(
         equal_chars1 = len(equal_part.seq1_range)
         equal_chars2 = len(equal_part.seq2_range)
 
-        while len(equal_mappings) > 0:
-            next_ = equal_mappings[0]
-            intersects = next_.seq1_range.intersects(
-                w.seq1_range
-            ) or next_.seq2_range.intersects(w.seq2_range)
-            if not intersects:
-                break
+        w, equal_chars1, equal_chars2 = _join_intersecting_word_ranges(
+            find_parent,
+            sequence1,
+            sequence2,
+            equal_mappings,
+            w,
+            equal_chars1,
+            equal_chars2,
+        )
 
-            v1 = find_parent(sequence1, next_.seq1_range.start)
-            v2 = find_parent(sequence2, next_.seq2_range.start)
-            assert v1 is not None and v2 is not None
-            v = SequenceDiff(v1, v2)
-            equal_part_inner = v.intersect(next_)
-            assert equal_part_inner is not None
-
-            equal_chars1 += len(equal_part_inner.seq1_range)
-            equal_chars2 += len(equal_part_inner.seq2_range)
-
-            w = w.join(v)
-
-            if w.seq1_range.end_exclusive >= next_.seq1_range.end_exclusive:
-                equal_mappings.pop(0)
-            else:
-                break
-
-        if (
-            force
-            and equal_chars1 + equal_chars2 < len(w.seq1_range) + len(w.seq2_range)
-        ) or equal_chars1 + equal_chars2 < (
-            (len(w.seq1_range) + len(w.seq2_range)) * 2
-        ) / 3:
+        if _should_extend_to_word(force, w, equal_chars1, equal_chars2):
             additional.append(w)
 
         last_point = w.get_end_exclusive()
@@ -317,6 +370,58 @@ def extend_diffs_to_entire_word_if_appropriate(
 
     merged = _merge_sequence_diffs(sequence_diffs, additional)
     return merged
+
+
+def _join_intersecting_word_ranges(
+    find_parent: Callable[[LinesSliceCharSequence, int], OffsetRange | None],
+    sequence1: LinesSliceCharSequence,
+    sequence2: LinesSliceCharSequence,
+    equal_mappings: list[SequenceDiff],
+    w: SequenceDiff,
+    equal_chars1: int,
+    equal_chars2: int,
+) -> tuple[SequenceDiff, int, int]:
+    """
+    Grows `w` by joining all word ranges that intersect it and returns the
+    joined word range together with the accumulated equal character counts.
+    """
+    while len(equal_mappings) > 0:
+        next_ = equal_mappings[0]
+        intersects = next_.seq1_range.intersects(
+            w.seq1_range
+        ) or next_.seq2_range.intersects(w.seq2_range)
+        if not intersects:
+            break
+
+        v1 = find_parent(sequence1, next_.seq1_range.start)
+        v2 = find_parent(sequence2, next_.seq2_range.start)
+        assert v1 is not None and v2 is not None
+        v = SequenceDiff(v1, v2)
+        equal_part_inner = v.intersect(next_)
+        assert equal_part_inner is not None
+
+        equal_chars1 += len(equal_part_inner.seq1_range)
+        equal_chars2 += len(equal_part_inner.seq2_range)
+
+        w = w.join(v)
+
+        if w.seq1_range.end_exclusive >= next_.seq1_range.end_exclusive:
+            equal_mappings.pop(0)
+        else:
+            break
+
+    return w, equal_chars1, equal_chars2
+
+
+def _should_extend_to_word(
+    force: bool,
+    w: SequenceDiff,
+    equal_chars1: int,
+    equal_chars2: int,
+) -> bool:
+    return (
+        force and equal_chars1 + equal_chars2 < len(w.seq1_range) + len(w.seq2_range)
+    ) or equal_chars1 + equal_chars2 < ((len(w.seq1_range) + len(w.seq2_range)) * 2) / 3
 
 
 def _merge_sequence_diffs(
@@ -417,63 +522,7 @@ def remove_very_short_matching_text_between_long_diffs(
             cur = diffs[i]
             last_result = result[-1]
 
-            def should_join_diffs(
-                before: SequenceDiff,
-                after: SequenceDiff,
-            ) -> bool:
-                unchanged_range = OffsetRange(
-                    last_result.seq1_range.end_exclusive,
-                    cur.seq1_range.start,
-                )
-
-                unchanged_line_count = sequence1.count_lines_in(unchanged_range)
-                if unchanged_line_count > 5 or len(unchanged_range) > 500:
-                    return False
-
-                unchanged_text = sequence1.get_text(unchanged_range).strip()
-                if (
-                    len(unchanged_text) > 20
-                    or len(re.split(r"\r\n|\r|\n", unchanged_text)) > 1
-                ):
-                    return False
-
-                before_line_count1 = sequence1.count_lines_in(before.seq1_range)
-                before_seq1_length = len(before.seq1_range)
-                before_line_count2 = sequence2.count_lines_in(before.seq2_range)
-                before_seq2_length = len(before.seq2_range)
-
-                after_line_count1 = sequence1.count_lines_in(after.seq1_range)
-                after_seq1_length = len(after.seq1_range)
-                after_line_count2 = sequence2.count_lines_in(after.seq2_range)
-                after_seq2_length = len(after.seq2_range)
-
-                max_value = 2 * 40 + 50
-
-                def cap(v: float) -> float:
-                    return min(v, max_value)
-
-                if (
-                    math.pow(
-                        math.pow(cap(before_line_count1 * 40 + before_seq1_length), 1.5)
-                        + math.pow(
-                            cap(before_line_count2 * 40 + before_seq2_length), 1.5
-                        ),
-                        1.5,
-                    )
-                    + math.pow(
-                        math.pow(cap(after_line_count1 * 40 + after_seq1_length), 1.5)
-                        + math.pow(
-                            cap(after_line_count2 * 40 + after_seq2_length), 1.5
-                        ),
-                        1.5,
-                    )
-                ) > (max_value**1.5) ** 1.5 * 1.3:
-                    return True
-
-                return False
-
-            should_join = should_join_diffs(last_result, cur)
-            if should_join:
+            if _should_join_long_diffs(sequence1, sequence2, last_result, cur):
                 should_repeat = True
                 result[-1] = result[-1].join(cur)
             else:
@@ -489,43 +538,108 @@ def remove_very_short_matching_text_between_long_diffs(
         cur: SequenceDiff,
         next_: SequenceDiff | None,
     ) -> None:
-        new_diff = cur
-
-        def should_mark_as_changed(text: str) -> bool:
-            return (
-                len(text) > 0
-                and len(text.strip()) <= 3
-                and len(cur.seq1_range) + len(cur.seq2_range) > 100
-            )
-
-        full_range1 = sequence1.extend_to_full_lines(cur.seq1_range)
-        prefix = sequence1.get_text(
-            OffsetRange(full_range1.start, cur.seq1_range.start)
-        )
-        if should_mark_as_changed(prefix):
-            new_diff = new_diff.delta_start(-len(prefix))
-
-        suffix = sequence1.get_text(
-            OffsetRange(cur.seq1_range.end_exclusive, full_range1.end_exclusive)
-        )
-        if should_mark_as_changed(suffix):
-            new_diff = new_diff.delta_end(len(suffix))
-
-        available_space = SequenceDiff.from_offset_pairs(
-            prev.get_end_exclusive() if prev else OffsetPair.zero(),
-            next_.get_starts() if next_ else OffsetPair.max(),
-        )
-        intersected = new_diff.intersect(available_space)
-        if intersected is None:
-            return
-        if (
-            len(new_diffs) > 0
-            and intersected.get_starts() == new_diffs[-1].get_end_exclusive()
-        ):
-            new_diffs[-1] = new_diffs[-1].join(intersected)
-        else:
-            new_diffs.append(intersected)
+        _append_full_line_extended_diff(sequence1, new_diffs, prev, cur, next_)
 
     for_each_with_neighbors(diffs, visit)
 
     return new_diffs
+
+
+def _should_join_long_diffs(
+    sequence1: LinesSliceCharSequence,
+    sequence2: LinesSliceCharSequence,
+    before: SequenceDiff,
+    after: SequenceDiff,
+) -> bool:
+    unchanged_range = OffsetRange(
+        before.seq1_range.end_exclusive,
+        after.seq1_range.start,
+    )
+
+    unchanged_line_count = sequence1.count_lines_in(unchanged_range)
+    if unchanged_line_count > 5 or len(unchanged_range) > 500:
+        return False
+
+    unchanged_text = sequence1.get_text(unchanged_range).strip()
+    if len(unchanged_text) > 20 or len(re.split(r"\r\n|\r|\n", unchanged_text)) > 1:
+        return False
+
+    before_line_count1 = sequence1.count_lines_in(before.seq1_range)
+    before_seq1_length = len(before.seq1_range)
+    before_line_count2 = sequence2.count_lines_in(before.seq2_range)
+    before_seq2_length = len(before.seq2_range)
+
+    after_line_count1 = sequence1.count_lines_in(after.seq1_range)
+    after_seq1_length = len(after.seq1_range)
+    after_line_count2 = sequence2.count_lines_in(after.seq2_range)
+    after_seq2_length = len(after.seq2_range)
+
+    max_value = 2 * 40 + 50
+
+    def cap(v: float) -> float:
+        return min(v, max_value)
+
+    if (
+        math.pow(
+            math.pow(cap(before_line_count1 * 40 + before_seq1_length), 1.5)
+            + math.pow(cap(before_line_count2 * 40 + before_seq2_length), 1.5),
+            1.5,
+        )
+        + math.pow(
+            math.pow(cap(after_line_count1 * 40 + after_seq1_length), 1.5)
+            + math.pow(cap(after_line_count2 * 40 + after_seq2_length), 1.5),
+            1.5,
+        )
+    ) > (max_value**1.5) ** 1.5 * 1.3:
+        return True
+
+    return False
+
+
+def _should_mark_as_changed(text: str, cur: SequenceDiff) -> bool:
+    return (
+        len(text) > 0
+        and len(text.strip()) <= 3
+        and len(cur.seq1_range) + len(cur.seq2_range) > 100
+    )
+
+
+def _append_full_line_extended_diff(
+    sequence1: LinesSliceCharSequence,
+    new_diffs: list[SequenceDiff],
+    prev: SequenceDiff | None,
+    cur: SequenceDiff,
+    next_: SequenceDiff | None,
+) -> None:
+    """
+    Extends `cur` to full lines if the surrounding line prefix/suffix is
+    insignificant and appends the result to `new_diffs`, joining it with the
+    last diff when they touch.
+    """
+    new_diff = cur
+
+    full_range1 = sequence1.extend_to_full_lines(cur.seq1_range)
+    prefix = sequence1.get_text(OffsetRange(full_range1.start, cur.seq1_range.start))
+    if _should_mark_as_changed(prefix, cur):
+        new_diff = new_diff.delta_start(-len(prefix))
+
+    suffix = sequence1.get_text(
+        OffsetRange(cur.seq1_range.end_exclusive, full_range1.end_exclusive)
+    )
+    if _should_mark_as_changed(suffix, cur):
+        new_diff = new_diff.delta_end(len(suffix))
+
+    available_space = SequenceDiff.from_offset_pairs(
+        prev.get_end_exclusive() if prev else OffsetPair.zero(),
+        next_.get_starts() if next_ else OffsetPair.max(),
+    )
+    intersected = new_diff.intersect(available_space)
+    if intersected is None:
+        return
+    if (
+        len(new_diffs) > 0
+        and intersected.get_starts() == new_diffs[-1].get_end_exclusive()
+    ):
+        new_diffs[-1] = new_diffs[-1].join(intersected)
+    else:
+        new_diffs.append(intersected)

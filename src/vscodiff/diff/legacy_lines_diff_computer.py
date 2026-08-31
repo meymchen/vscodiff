@@ -47,67 +47,9 @@ class LegacyLinesDiffComputer(LinesDiffComputer):
         last_change: DetailedLineRangeMapping | None = None
 
         for c in result.changes:
-            if c.original_end_line_number == 0:
-                original_range = LineRange(
-                    c.original_start_line_number + 1,
-                    c.original_start_line_number + 1,
-                )
-            else:
-                original_range = LineRange(
-                    c.original_start_line_number,
-                    c.original_end_line_number + 1,
-                )
-
-            if c.modified_end_line_number == 0:
-                modified_range = LineRange(
-                    c.modified_start_line_number + 1,
-                    c.modified_start_line_number + 1,
-                )
-            else:
-                modified_range = LineRange(
-                    c.modified_start_line_number,
-                    c.modified_end_line_number + 1,
-                )
-
-            change = DetailedLineRangeMapping(
-                original_range,
-                modified_range,
-                [
-                    RangeMapping(
-                        Range(
-                            cc.original_start_line_number,
-                            cc.original_start_column,
-                            cc.original_end_line_number,
-                            cc.original_end_column,
-                        ),
-                        Range(
-                            cc.modified_start_line_number,
-                            cc.modified_start_column,
-                            cc.modified_end_line_number,
-                            cc.modified_end_column,
-                        ),
-                    )
-                    for cc in c.char_changes
-                ]
-                if c.char_changes is not None
-                else None,
-            )
+            change = _to_detailed_line_range_mapping(c)
             if last_change is not None:
-                if (
-                    last_change.modified.end_line_exclusive
-                    == change.modified.start_line
-                    or last_change.original.end_line_exclusive
-                    == change.original.start_line
-                ):
-                    change = DetailedLineRangeMapping(
-                        last_change.original.join(change.original),
-                        last_change.modified.join(change.modified),
-                        last_change.inner_changes + change.inner_changes
-                        if last_change.inner_changes is not None
-                        and change.inner_changes is not None
-                        else None,
-                    )
-                    changes.pop()
+                change = _merge_adjacent_change(changes, last_change, change)
 
             changes.append(change)
             last_change = change
@@ -123,6 +65,77 @@ class LegacyLinesDiffComputer(LinesDiffComputer):
         )
 
         return LinesDiff(changes, [], result.quit_early)
+
+
+def _to_detailed_line_range_mapping(change: LineChange) -> DetailedLineRangeMapping:
+    if change.original_end_line_number == 0:
+        original_range = LineRange(
+            change.original_start_line_number + 1,
+            change.original_start_line_number + 1,
+        )
+    else:
+        original_range = LineRange(
+            change.original_start_line_number,
+            change.original_end_line_number + 1,
+        )
+
+    if change.modified_end_line_number == 0:
+        modified_range = LineRange(
+            change.modified_start_line_number + 1,
+            change.modified_start_line_number + 1,
+        )
+    else:
+        modified_range = LineRange(
+            change.modified_start_line_number,
+            change.modified_end_line_number + 1,
+        )
+
+    return DetailedLineRangeMapping(
+        original_range,
+        modified_range,
+        [
+            RangeMapping(
+                Range(
+                    cc.original_start_line_number,
+                    cc.original_start_column,
+                    cc.original_end_line_number,
+                    cc.original_end_column,
+                ),
+                Range(
+                    cc.modified_start_line_number,
+                    cc.modified_start_column,
+                    cc.modified_end_line_number,
+                    cc.modified_end_column,
+                ),
+            )
+            for cc in change.char_changes
+        ]
+        if change.char_changes is not None
+        else None,
+    )
+
+
+def _merge_adjacent_change(
+    changes: list[DetailedLineRangeMapping],
+    last_change: DetailedLineRangeMapping,
+    change: DetailedLineRangeMapping,
+) -> DetailedLineRangeMapping:
+    if (
+        last_change.modified.end_line_exclusive == change.modified.start_line
+        or last_change.original.end_line_exclusive == change.original.start_line
+    ):
+        merged = DetailedLineRangeMapping(
+            last_change.original.join(change.original),
+            last_change.modified.join(change.modified),
+            last_change.inner_changes + change.inner_changes
+            if last_change.inner_changes is not None
+            and change.inner_changes is not None
+            else None,
+        )
+        changes.pop()
+        return merged
+
+    return change
 
 
 @dataclass
@@ -462,6 +475,75 @@ class DiffComputer:
         )
 
     def compute_diff(self) -> DiffComputerResult:
+        trivial_result = self._compute_trivial_result()
+        if trivial_result is not None:
+            return trivial_result
+
+        diff_result = _compute_diff(
+            self._original,
+            self._modified,
+            self._continue_line_diff,
+            self._should_make_pretty_diff,
+        )
+        raw_changes = diff_result.changes
+        quit_early = diff_result.quit_early
+
+        if self._should_ignore_trim_whitespace:
+            return DiffComputerResult(
+                quit_early=quit_early,
+                changes=self._create_line_changes(raw_changes),
+            )
+
+        result: list[LineChange] = []
+
+        original_line_index = 0
+        modified_line_index = 0
+        i = -1
+        length = len(raw_changes)
+        while i < length:
+            next_change = raw_changes[i + 1] if i + 1 < length else None
+            original_stop = (
+                next_change.original_start
+                if next_change is not None
+                else len(self._original_lines)
+            )
+            modified_stop = (
+                next_change.modified_start
+                if next_change is not None
+                else len(self._modified_lines)
+            )
+
+            while (
+                original_line_index < original_stop
+                and modified_line_index < modified_stop
+            ):
+                self._push_trim_whitespace_changes(
+                    result, original_line_index, modified_line_index
+                )
+                original_line_index += 1
+                modified_line_index += 1
+
+            if next_change is not None:
+                result.append(
+                    LineChange.create_from_diff_result(
+                        self._should_ignore_trim_whitespace,
+                        next_change,
+                        self._original,
+                        self._modified,
+                        self._continue_char_diff,
+                        self._should_compute_char_changes,
+                        self._should_post_process_char_changes,
+                    )
+                )
+
+                original_line_index += next_change.original_length
+                modified_line_index += next_change.modified_length
+
+            i += 1
+
+        return DiffComputerResult(quit_early=quit_early, changes=result)
+
+    def _compute_trivial_result(self) -> DiffComputerResult | None:
         if len(self._original.lines) == 1 and len(self._original.lines[0]) == 0:
             if len(self._modified.lines) == 1 and len(self._modified.lines[0]) == 0:
                 return DiffComputerResult(quit_early=False, changes=[])
@@ -493,137 +575,88 @@ class DiffComputer:
                 ],
             )
 
-        diff_result = _compute_diff(
-            self._original,
-            self._modified,
-            self._continue_line_diff,
-            self._should_make_pretty_diff,
-        )
-        raw_changes = diff_result.changes
-        quit_early = diff_result.quit_early
+        return None
 
-        if self._should_ignore_trim_whitespace:
-            line_changes: list[LineChange] = []
-            for change in raw_changes:
-                line_changes.append(
-                    LineChange.create_from_diff_result(
-                        self._should_ignore_trim_whitespace,
-                        change,
-                        self._original,
-                        self._modified,
-                        self._continue_char_diff,
-                        self._should_compute_char_changes,
-                        self._should_post_process_char_changes,
-                    )
+    def _create_line_changes(self, raw_changes: list[DiffChange]) -> list[LineChange]:
+        line_changes: list[LineChange] = []
+        for change in raw_changes:
+            line_changes.append(
+                LineChange.create_from_diff_result(
+                    self._should_ignore_trim_whitespace,
+                    change,
+                    self._original,
+                    self._modified,
+                    self._continue_char_diff,
+                    self._should_compute_char_changes,
+                    self._should_post_process_char_changes,
                 )
-
-            return DiffComputerResult(quit_early=quit_early, changes=line_changes)
-
-        result: list[LineChange] = []
-
-        original_line_index = 0
-        modified_line_index = 0
-        i = -1
-        length = len(raw_changes)
-        while i < length:
-            next_change = raw_changes[i + 1] if i + 1 < length else None
-            original_stop = (
-                next_change.original_start
-                if next_change is not None
-                else len(self._original_lines)
-            )
-            modified_stop = (
-                next_change.modified_start
-                if next_change is not None
-                else len(self._modified_lines)
             )
 
-            while (
-                original_line_index < original_stop
-                and modified_line_index < modified_stop
-            ):
-                original_line = self._original_lines[original_line_index]
-                modified_line = self._modified_lines[modified_line_index]
+        return line_changes
 
-                if original_line != modified_line:
-                    original_start_column = _get_first_non_blank_column(
-                        original_line, 1
-                    )
-                    modified_start_column = _get_first_non_blank_column(
-                        modified_line, 1
-                    )
-                    while original_start_column > 1 and modified_start_column > 1:
-                        original_char = ord(original_line[original_start_column - 2])
-                        modified_char = ord(modified_line[modified_start_column - 2])
-                        if original_char != modified_char:
-                            break
+    def _push_trim_whitespace_changes(
+        self,
+        result: list[LineChange],
+        original_line_index: int,
+        modified_line_index: int,
+    ) -> None:
+        original_line = self._original_lines[original_line_index]
+        modified_line = self._modified_lines[modified_line_index]
 
-                        original_start_column -= 1
-                        modified_start_column -= 1
+        if original_line == modified_line:
+            return
 
-                    if original_start_column > 1 or modified_start_column > 1:
-                        self._push_trim_whitespace_char_change(
-                            result,
-                            original_line_index + 1,
-                            1,
-                            original_start_column,
-                            modified_line_index + 1,
-                            1,
-                            modified_start_column,
-                        )
+        original_start_column = _get_first_non_blank_column(original_line, 1)
+        modified_start_column = _get_first_non_blank_column(modified_line, 1)
+        while original_start_column > 1 and modified_start_column > 1:
+            original_char = ord(original_line[original_start_column - 2])
+            modified_char = ord(modified_line[modified_start_column - 2])
+            if original_char != modified_char:
+                break
 
-                    original_end_column = _get_last_non_blank_column(original_line, 1)
-                    modified_end_column = _get_last_non_blank_column(modified_line, 1)
-                    original_max_column = len(original_line) + 1
-                    modified_max_column = len(modified_line) + 1
-                    while (
-                        original_end_column < original_max_column
-                        and modified_end_column < modified_max_column
-                    ):
-                        original_char = ord(original_line[original_end_column - 1])
-                        modified_char = ord(original_line[modified_end_column - 1])
-                        if original_char != modified_char:
-                            break
+            original_start_column -= 1
+            modified_start_column -= 1
 
-                        original_end_column += 1
-                        modified_end_column += 1
+        if original_start_column > 1 or modified_start_column > 1:
+            self._push_trim_whitespace_char_change(
+                result,
+                original_line_index + 1,
+                1,
+                original_start_column,
+                modified_line_index + 1,
+                1,
+                modified_start_column,
+            )
 
-                    if (
-                        original_end_column < original_max_column
-                        or modified_end_column < modified_max_column
-                    ):
-                        self._push_trim_whitespace_char_change(
-                            result,
-                            original_line_index + 1,
-                            original_end_column,
-                            original_max_column,
-                            modified_line_index + 1,
-                            modified_end_column,
-                            modified_max_column,
-                        )
+        original_end_column = _get_last_non_blank_column(original_line, 1)
+        modified_end_column = _get_last_non_blank_column(modified_line, 1)
+        original_max_column = len(original_line) + 1
+        modified_max_column = len(modified_line) + 1
+        while (
+            original_end_column < original_max_column
+            and modified_end_column < modified_max_column
+        ):
+            original_char = ord(original_line[original_end_column - 1])
+            modified_char = ord(original_line[modified_end_column - 1])
+            if original_char != modified_char:
+                break
 
-                original_line_index += 1
-                modified_line_index += 1
+            original_end_column += 1
+            modified_end_column += 1
 
-            if next_change is not None:
-                result.append(
-                    LineChange.create_from_diff_result(
-                        self._should_ignore_trim_whitespace,
-                        next_change,
-                        self._original,
-                        self._modified,
-                        self._continue_char_diff,
-                        self._should_compute_char_changes,
-                        self._should_post_process_char_changes,
-                    )
-                )
-
-                original_line_index += next_change.original_length
-                modified_line_index += next_change.modified_length
-
-            i += 1
-
-        return DiffComputerResult(quit_early=quit_early, changes=result)
+        if (
+            original_end_column < original_max_column
+            or modified_end_column < modified_max_column
+        ):
+            self._push_trim_whitespace_char_change(
+                result,
+                original_line_index + 1,
+                original_end_column,
+                original_max_column,
+                modified_line_index + 1,
+                modified_end_column,
+                modified_max_column,
+            )
 
     def _push_trim_whitespace_char_change(
         self,

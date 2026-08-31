@@ -23,6 +23,7 @@ from vscodiff.diff.range_mapping import (
 )
 from vscodiff.diff.default_lines_diff_computer.algorithms.diff_algorithm import (
     DateTimeout,
+    DiffAlgorithmResult,
     InfiniteTimeout,
     SequenceDiff,
 )
@@ -59,42 +60,9 @@ class DefaultLineDiffComputer(LinesDiffComputer):
         modified_lines: list[str],
         options: LinesDiffComputerOptions,
     ) -> LinesDiff:
-        # Edge case: identical small files — return empty diff
-        if len(original_lines) <= 1 and equals(
-            original_lines, modified_lines, lambda a, b: a == b
-        ):
-            return LinesDiff([], [], False)
-
-        # Edge case: one side is a single empty line, the other is not
-        if (len(original_lines) == 1 and len(original_lines[0]) == 0) or (
-            len(modified_lines) == 1 and len(modified_lines[0]) == 0
-        ):
-            return LinesDiff(
-                [
-                    DetailedLineRangeMapping(
-                        LineRange(1, len(original_lines) + 1),
-                        LineRange(1, len(modified_lines) + 1),
-                        [
-                            RangeMapping(
-                                Range(
-                                    1,
-                                    1,
-                                    len(original_lines),
-                                    len(original_lines[-1]) + 1,
-                                ),
-                                Range(
-                                    1,
-                                    1,
-                                    len(modified_lines),
-                                    len(modified_lines[-1]) + 1,
-                                ),
-                            )
-                        ],
-                    )
-                ],
-                [],
-                False,
-            )
+        trivial_diff = _trivial_diff(original_lines, modified_lines)
+        if trivial_diff is not None:
+            return trivial_diff
 
         timeout = (
             InfiniteTimeout.instance
@@ -103,112 +71,34 @@ class DefaultLineDiffComputer(LinesDiffComputer):
         )
         consider_whitespace_changes = not options.ignore_trim_whitespace
 
-        # Create perfect hashes for trimmed line content
-        perfect_hashes: dict[str, int] = {}
-
-        def get_or_create_hash(text: str) -> int:
-            if text not in perfect_hashes:
-                perfect_hashes[text] = len(perfect_hashes)
-            return perfect_hashes[text]
-
-        original_lines_hashes = [
-            get_or_create_hash(line.strip()) for line in original_lines
-        ]
-        modified_lines_hashes = [
-            get_or_create_hash(line.strip()) for line in modified_lines
-        ]
+        original_lines_hashes, modified_lines_hashes = _hash_lines(
+            original_lines, modified_lines
+        )
 
         sequence1 = LineSequence(original_lines_hashes, original_lines)
         sequence2 = LineSequence(modified_lines_hashes, modified_lines)
 
-        # Choose diff algorithm based on input size
-        if sequence1.length + sequence2.length < 1700:
-            line_alignment_result = self._dynamic_programming_diffing.compute(
-                sequence1,
-                sequence2,
-                timeout,
-                lambda offset1, offset2: (
-                    (
-                        0.1
-                        if len(modified_lines[offset2]) == 0
-                        else 1 + math.log(1 + len(modified_lines[offset2]))
-                    )
-                    if original_lines[offset1] == modified_lines[offset2]
-                    else 0.99
-                ),
-            )
-        else:
-            line_alignment_result = self._myers_diffing_algorithm.compute(
-                sequence1,
-                sequence2,
-                timeout,
-            )
-
-        line_alignments = line_alignment_result.diffs
+        line_alignment_result = self._compute_line_alignments(
+            sequence1, sequence2, timeout, original_lines, modified_lines
+        )
         hit_timeout = line_alignment_result.hit_timeout
-        line_alignments = optimize_sequence_diffs(sequence1, sequence2, line_alignments)
+
+        line_alignments = optimize_sequence_diffs(
+            sequence1, sequence2, line_alignment_result.diffs
+        )
         line_alignments = remove_very_short_matching_lines_between_diffs(
             sequence1, sequence2, line_alignments
         )
 
-        alignments: list[RangeMapping] = []
-
-        seq1_last_start = 0
-        seq2_last_start = 0
-
-        def scan_for_whitespace_changes(equal_lines_count: int):
-            nonlocal hit_timeout, seq1_last_start, seq2_last_start
-            if not consider_whitespace_changes:
-                return
-
-            for i in range(equal_lines_count):
-                seq1_offset = seq1_last_start + i
-                seq2_offset = seq2_last_start + i
-                if original_lines[seq1_offset] != modified_lines[seq2_offset]:
-                    # This is because of whitespace changes — diff these lines
-                    character_diffs = self._refine_diff(
-                        original_lines,
-                        modified_lines,
-                        SequenceDiff(
-                            OffsetRange(seq1_offset, seq1_offset + 1),
-                            OffsetRange(seq2_offset, seq2_offset + 1),
-                        ),
-                        timeout,
-                        consider_whitespace_changes,
-                        options,
-                    )
-                    for a in character_diffs["mappings"]:
-                        alignments.append(a)
-                    if character_diffs["hit_timeout"]:
-                        hit_timeout = True
-
-        for diff in line_alignments:
-            assert (
-                diff.seq1_range.start - seq1_last_start
-                == diff.seq2_range.start - seq2_last_start
-            )
-
-            equal_lines_count = diff.seq1_range.start - seq1_last_start
-
-            scan_for_whitespace_changes(equal_lines_count)
-
-            seq1_last_start = diff.seq1_range.end_exclusive
-            seq2_last_start = diff.seq2_range.end_exclusive
-
-            character_diffs = self._refine_diff(
-                original_lines,
-                modified_lines,
-                diff,
-                timeout,
-                consider_whitespace_changes,
-                options,
-            )
-            if character_diffs["hit_timeout"]:
-                hit_timeout = True
-            for a in character_diffs["mappings"]:
-                alignments.append(a)
-
-        scan_for_whitespace_changes(len(original_lines) - seq1_last_start)
+        alignments, hit_timeout = self._refine_alignments(
+            line_alignments,
+            hit_timeout,
+            original_lines,
+            modified_lines,
+            timeout,
+            consider_whitespace_changes,
+            options,
+        )
 
         changes = line_range_mapping_from_range_mappings(
             alignments,
@@ -233,6 +123,144 @@ class DefaultLineDiffComputer(LinesDiffComputer):
         assert self._validate_changes(changes, original_lines, modified_lines)
 
         return LinesDiff(changes, moves, hit_timeout)
+
+    def _compute_line_alignments(
+        self,
+        sequence1: LineSequence,
+        sequence2: LineSequence,
+        timeout,
+        original_lines: list[str],
+        modified_lines: list[str],
+    ) -> DiffAlgorithmResult:
+        # Choose diff algorithm based on input size
+        if sequence1.length + sequence2.length < 1700:
+            return self._dynamic_programming_diffing.compute(
+                sequence1,
+                sequence2,
+                timeout,
+                lambda offset1, offset2: (
+                    (
+                        0.1
+                        if len(modified_lines[offset2]) == 0
+                        else 1 + math.log(1 + len(modified_lines[offset2]))
+                    )
+                    if original_lines[offset1] == modified_lines[offset2]
+                    else 0.99
+                ),
+            )
+        return self._myers_diffing_algorithm.compute(
+            sequence1,
+            sequence2,
+            timeout,
+        )
+
+    def _refine_alignments(
+        self,
+        line_alignments: list[SequenceDiff],
+        hit_timeout: bool,
+        original_lines: list[str],
+        modified_lines: list[str],
+        timeout,
+        consider_whitespace_changes: bool,
+        options: LinesDiffComputerOptions,
+    ) -> tuple[list[RangeMapping], bool]:
+        alignments: list[RangeMapping] = []
+
+        seq1_last_start = 0
+        seq2_last_start = 0
+
+        for diff in line_alignments:
+            assert (
+                diff.seq1_range.start - seq1_last_start
+                == diff.seq2_range.start - seq2_last_start
+            )
+
+            equal_lines_count = diff.seq1_range.start - seq1_last_start
+
+            whitespace_mappings, whitespace_hit_timeout = (
+                self._scan_for_whitespace_changes(
+                    equal_lines_count,
+                    seq1_last_start,
+                    seq2_last_start,
+                    original_lines,
+                    modified_lines,
+                    timeout,
+                    consider_whitespace_changes,
+                    options,
+                )
+            )
+            alignments.extend(whitespace_mappings)
+            if whitespace_hit_timeout:
+                hit_timeout = True
+
+            seq1_last_start = diff.seq1_range.end_exclusive
+            seq2_last_start = diff.seq2_range.end_exclusive
+
+            character_diffs = self._refine_diff(
+                original_lines,
+                modified_lines,
+                diff,
+                timeout,
+                consider_whitespace_changes,
+                options,
+            )
+            if character_diffs["hit_timeout"]:
+                hit_timeout = True
+            alignments.extend(character_diffs["mappings"])
+
+        whitespace_mappings, whitespace_hit_timeout = self._scan_for_whitespace_changes(
+            len(original_lines) - seq1_last_start,
+            seq1_last_start,
+            seq2_last_start,
+            original_lines,
+            modified_lines,
+            timeout,
+            consider_whitespace_changes,
+            options,
+        )
+        alignments.extend(whitespace_mappings)
+        if whitespace_hit_timeout:
+            hit_timeout = True
+
+        return alignments, hit_timeout
+
+    def _scan_for_whitespace_changes(
+        self,
+        equal_lines_count: int,
+        seq1_last_start: int,
+        seq2_last_start: int,
+        original_lines: list[str],
+        modified_lines: list[str],
+        timeout,
+        consider_whitespace_changes: bool,
+        options: LinesDiffComputerOptions,
+    ) -> tuple[list[RangeMapping], bool]:
+        alignments: list[RangeMapping] = []
+        hit_timeout = False
+        if not consider_whitespace_changes:
+            return alignments, hit_timeout
+
+        for i in range(equal_lines_count):
+            seq1_offset = seq1_last_start + i
+            seq2_offset = seq2_last_start + i
+            if original_lines[seq1_offset] != modified_lines[seq2_offset]:
+                # This is because of whitespace changes — diff these lines
+                character_diffs = self._refine_diff(
+                    original_lines,
+                    modified_lines,
+                    SequenceDiff(
+                        OffsetRange(seq1_offset, seq1_offset + 1),
+                        OffsetRange(seq2_offset, seq2_offset + 1),
+                    ),
+                    timeout,
+                    consider_whitespace_changes,
+                    options,
+                )
+                alignments.extend(character_diffs["mappings"])
+                if character_diffs["hit_timeout"]:
+                    hit_timeout = True
+
+        return alignments, hit_timeout
 
     @staticmethod
     def _validate_changes(
@@ -396,6 +424,70 @@ class DefaultLineDiffComputer(LinesDiffComputer):
             "mappings": result,
             "hit_timeout": diff_result.hit_timeout,
         }
+
+
+def _trivial_diff(
+    original_lines: list[str], modified_lines: list[str]
+) -> LinesDiff | None:
+    # Edge case: identical small files — return empty diff
+    if len(original_lines) <= 1 and equals(
+        original_lines, modified_lines, lambda a, b: a == b
+    ):
+        return LinesDiff([], [], False)
+
+    # Edge case: one side is a single empty line, the other is not
+    if (len(original_lines) == 1 and len(original_lines[0]) == 0) or (
+        len(modified_lines) == 1 and len(modified_lines[0]) == 0
+    ):
+        return LinesDiff(
+            [
+                DetailedLineRangeMapping(
+                    LineRange(1, len(original_lines) + 1),
+                    LineRange(1, len(modified_lines) + 1),
+                    [
+                        RangeMapping(
+                            Range(
+                                1,
+                                1,
+                                len(original_lines),
+                                len(original_lines[-1]) + 1,
+                            ),
+                            Range(
+                                1,
+                                1,
+                                len(modified_lines),
+                                len(modified_lines[-1]) + 1,
+                            ),
+                        )
+                    ],
+                )
+            ],
+            [],
+            False,
+        )
+
+    return None
+
+
+def _hash_lines(
+    original_lines: list[str], modified_lines: list[str]
+) -> tuple[list[int], list[int]]:
+    # Create perfect hashes for trimmed line content
+    perfect_hashes: dict[str, int] = {}
+
+    def get_or_create_hash(text: str) -> int:
+        if text not in perfect_hashes:
+            perfect_hashes[text] = len(perfect_hashes)
+        return perfect_hashes[text]
+
+    original_lines_hashes = [
+        get_or_create_hash(line.strip()) for line in original_lines
+    ]
+    modified_lines_hashes = [
+        get_or_create_hash(line.strip()) for line in modified_lines
+    ]
+
+    return original_lines_hashes, modified_lines_hashes
 
 
 def _to_line_range_mapping(sequence_diff: SequenceDiff) -> LineRangeMapping:
